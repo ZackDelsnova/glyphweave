@@ -5,9 +5,25 @@
 #include <cmath>
 #include <cstdint>
 #include <execution>
+#include <string>
+
+#define NOMINMAX
+#include <Windows.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+int get_terminal_width() {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+    return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+}
+
+struct Cell {
+    char ch;
+    unsigned char r, g, b;   // fg
+    unsigned char br, bg, bb; // bg
+};
 
 // area avg resize
 struct Image {
@@ -54,99 +70,192 @@ Image resize_area_average(const Image& src, int new_w, int new_h) {
     return dst;
 }
 
+// grayscaler
+std::vector<float> prepare_grayscale(const Image& img, float gamma, bool normalize) {
+    int total = img.w * img.h;
+    std::vector<float> grays(total);
+    // grayscale BT.709
+    for (int i = 0; i < total; ++i) {
+        int idx = i * 3;
+        float r = img.data[idx];
+        float g = img.data[idx + 1];
+        float b = img.data[idx + 2];
+        grays[i] = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    }
+
+    // gamma
+    for (float& v : grays) {
+        v = std::pow(v / 255.0f, gamma) * 255.0f;
+    }
+
+    // normalize
+    if (normalize) {
+        float min_v = *std::min_element(grays.begin(), grays.end());
+        float max_v = *std::max_element(grays.begin(), grays.end());
+        float range = max_v - min_v;
+        if (range < 1.0f) range = 1.0f;
+        for (float& v : grays) {
+            v = ((v - min_v) / range) * 255.0f;
+        }
+    }
+
+    return grays;
+}
+
+std::vector<Cell> process_blocks(
+    const std::vector<float>& grays,
+    const Image& rgb_img, // resized rgb img
+    int img_w, int img_h,
+    int block_w, int block_h,
+    const std::string& block_chars,
+    bool use_color
+) {
+    int blocks_x = (img_w + block_w - 1) / block_w;
+    int blocks_y = (img_h + block_h - 1) / block_h;
+    std::vector<Cell> cells(blocks_x * blocks_y);
+
+    // error diffusion
+    std::vector<float> errors(img_w * img_h, 0.0f);
+    const int NUM_BLOCKS = block_chars.size();
+
+    for (int by = 0; by < blocks_y; ++by) {
+        for (int bx = 0; bx < blocks_x; ++bx) {
+            int x0 = bx * block_w;
+            int y0 = by * block_h;
+
+            // avg grayscale + error
+            float sum = 0.0f;
+            int count = 0;
+            for (int dy = 0; dy < block_h; ++dy) {
+                for (int dx = 0; dx < block_w; ++dx) {
+                    int px = x0 + dx;
+                    int py = y0 + dy;
+                    if (px < img_w && py < img_h) {
+                        int idx = py * img_w + px;
+                        sum += grays[idx] + errors[idx];
+                        ++count;
+                    }
+                }
+            }
+
+            if (count == 0) continue;
+            float avg = sum / count;
+            avg = std::clamp(avg, 0.0f, 255.0f);
+
+            // quantize
+            float norm = avg / 255.0f;
+            int char_idx = static_cast<int>(norm * (NUM_BLOCKS - 1) + 0.5f);
+            char_idx = std::clamp(char_idx, 0, NUM_BLOCKS - 1);
+            char ch = block_chars[char_idx];
+
+            float quantized = (char_idx / (float)(NUM_BLOCKS - 1)) * 255.0f;
+            float error = avg - quantized;
+
+            // distrubute error by floyd-steinberg
+            float weight = 1.0f / 16.0f;
+            if (x0 + block_w < img_w) {
+                errors[y0 * img_w + (x0 + block_w)] += error * 7.0f * weight;
+            }
+            if (y0 + block_h < img_h) {
+                if (x0 > 0) {
+                    errors[(y0 + block_h) * img_w + (x0 - 1)] += error * 3.0f * weight;
+                }
+                errors[(y0 + block_h) * img_w + x0] += error * 5.0f * weight;
+                if (x0 + block_w < img_w) {
+                    errors[(y0 + block_h) * img_w + (x0 + block_w)] += error * 1.0f * weight;
+                }
+            }
+
+            // avg rgb
+            int sum_r = 0, sum_g = 0, sum_b = 0;
+            int rgb_count = 0;
+            for (int dy = 0; dy < block_h; ++dy) {
+                for (int dx = 0; dx < block_w; ++dx) {
+                    int px = x0 + dx, py = y0 + dy;
+                    if (px < img_w && py < img_h) {
+                        int idx = (py * img_w + px) * 3;
+                        sum_r += rgb_img.data[idx];
+                        sum_g += rgb_img.data[idx + 1];
+                        sum_b += rgb_img.data[idx + 2];
+                        ++rgb_count;
+                    }
+                }
+            }
+
+            Cell& cell = cells[by * blocks_x + bx];
+            cell.ch = ch;
+            if (rgb_count > 0) {
+                cell.r = sum_r / rgb_count;
+                cell.g = sum_g / rgb_count;
+                cell.b = sum_b / rgb_count;
+                if (use_color) {
+                    cell.br = cell.r / 2;
+                    cell.bg = cell.g / 2;
+                    cell.bb = cell.b / 2;
+                } else {
+                    cell.br = cell.bg = cell.bb = 0;
+                }
+            }
+        }
+    }
+
+    return cells;
+}
+
+std::string render_cells(const std::vector<Cell>& cells, int blocks_x, int blocks_y, bool use_color) {
+    std::string output;
+    output.reserve(blocks_x * blocks_y * 20); // rughly with ansi
+    for (int by = 0; by < blocks_y; ++by) {
+        for (int bx = 0; bx < blocks_x; ++bx) {
+            const Cell& cell = cells[by * blocks_x + bx];
+            if (use_color) {
+                output += "\033[38;2;" + std::to_string(cell.r) + ";" + std::to_string(cell.g) + ";" + std::to_string(cell.b) + "m"; // fg
+                output += "\033[48;2;" + std::to_string(cell.br) + ";" + std::to_string(cell.bg) + ";" + std::to_string(cell.bb) + "m"; // bg
+                output += cell.ch;
+                output += "\033[0m"; // clear
+            } else {
+                output += cell.ch;
+            }
+        }
+        output += '\n';
+    }
+    
+    return output;
+}
+
 // bloack based printer
 void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_color = false) {
+    
+    // detect terminal width - windows
+    int terminal_width = get_terminal_width();
+    
     // tuneable
-    const int TARGET_WIDTH = 500;
+    const int TARGET_WIDTH = std::max(80, terminal_width - 2); // use almost full screen
     const float CHAR_ASPECT = 2.0f;
     const float GAMMA = 1.0f;
     const bool USE_NORMALIZATION = true;
-
     const int TARGET_HEIGHT = std::max(1, static_cast<int>((TARGET_WIDTH * h) / (w * CHAR_ASPECT)));
 
     // src image wrapper
     Image src{w, h, 3, std::vector<unsigned char>(pixels, pixels + w*h*3)};
     Image resized = resize_area_average(src, TARGET_WIDTH, TARGET_HEIGHT);
 
-    // grayscale BT.709
-    std::vector<float> grays(TARGET_WIDTH * TARGET_HEIGHT);
-    for (int i = 0; i < TARGET_WIDTH * TARGET_HEIGHT; ++i) {
-        int idx = i * 3;
-        float r = resized.data[idx];
-        float g = resized.data[idx + 1];
-        float b = resized.data[idx + 2];
-        grays[i] = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-    }
+    // gray scaled thing
+    std::vector<float> grays = prepare_grayscale(src, GAMMA, USE_NORMALIZATION);
 
-    // gamma corrections
-    std::for_each(std::execution::par, grays.begin(), grays.end(),
-                  [GAMMA](float &v) { v = std::pow(v / 255.0f, GAMMA) * 255.0f; });
-
-    // min-max normalization
-    if (USE_NORMALIZATION) {
-        float min_gray = *std::min_element(grays.begin(), grays.end());
-        float max_gray = *std::max_element(grays.begin(), grays.end());
-        float range = max_gray - min_gray;
-        if (range < 1.0f) range = 1.0f;
-        std::for_each(std::execution::par, grays.begin(), grays.end(),
-                      [min_gray, range](float &v) {
-                          v = ((v - min_gray) / range) * 255.0f;
-                      });
-    }
-
-    // bloack based dithering
+    // block processing
     // order 0%, 25%, 50%, 75%, 100%
-    const std::string BLOCKS = " ░▒▓█";   // space, light, medium, dark, full
-    const int NUM_BLOCKS = BLOCKS.size();
-
     // each block is 2x2
-    const int block_w = 2;
-    const int block_h = 2;
+    const int block_w = 2, block_h = 2;
+    const std::string BLOCKS = " ░▒▓█";   // space, light, medium, dark, full
+    std::vector<Cell> cells = process_blocks(grays, resized, TARGET_WIDTH, TARGET_HEIGHT,
+                                            block_w, block_h, BLOCKS, use_color);
 
-    const std::string RESET = "\033[0m";
-    const std::string BG_BLACK = "\033[40m"; 
-
-    for (int y = 0; y < TARGET_HEIGHT; ++y) {
-        for (int x = 0; x < TARGET_WIDTH; ++x) {
-            float sum_gray = 0.0f;
-            int sum_r = 0, sum_g = 0, sum_b = 0;
-            int count = 0;
-            for (int dy = 0; dy < block_h; ++dy) {
-                for (int dx = 0; dx < block_w; ++dx) {
-                    int px = x + dx;
-                    int py = y + dy;
-                    if (px < TARGET_WIDTH && py < TARGET_HEIGHT) {
-                        int idx = py * TARGET_WIDTH + px;
-                        sum_gray += grays[idx];
-                        int rgb_idx = idx * 3;
-                        sum_r += resized.data[rgb_idx];
-                        sum_g += resized.data[rgb_idx + 1];
-                        sum_b += resized.data[rgb_idx + 2];
-                        ++count;
-                    }
-                }
-            }
-            if (count == 0) continue;
-            float avg_gray = sum_gray / count;
-            int avg_r = sum_r / count;
-            int avg_g = sum_g / count;
-            int avg_b = sum_b / count;
-            
-            float norm = std::clamp(avg_gray / 255.0f, 0.0f, 1.0f);
-            int char_idx = static_cast<int>(norm * (NUM_BLOCKS - 1) + 0.5f);
-            char_idx = std::clamp(char_idx, 0, NUM_BLOCKS - 1);
-            char block_char = BLOCKS[char_idx];
-
-            if (use_color) {
-                std::cout << "\033[38;2;" << avg_r << ";" << avg_g << ";" << avg_b << "m";
-                std::cout << BG_BLACK;
-                std::cout << block_char << RESET;
-            } else {
-                std::cout << block_char;
-            }
-        }
-        std::cout << '\n';
-    }
+    // render                                  
+    int blocks_x = (TARGET_WIDTH + block_w - 1) / block_w;
+    int blocks_y = (TARGET_HEIGHT + block_h - 1) / block_h;
+    std::string output = render_cells(cells, blocks_x, blocks_y, use_color);
+    std::cout << output;
 }
 
 // glyphweave <filename> -c[optional print in color]
