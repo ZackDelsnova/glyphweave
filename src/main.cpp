@@ -9,6 +9,7 @@
 #include <thread>
 #include <csignal>
 #include <atomic>
+#include <fstream>
 
 #define _USE_MATH_DEFINES
 #include <cmath>
@@ -308,7 +309,7 @@ void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_col
             std::cout << "\033[2J\033[H" << output << std::flush;
             std::this_thread::sleep_for(std::chrono::milliseconds(glitch_interval_ms));
         }
-        std::cout << "\033[?25h" << "\033[0m" << std::flush; // clean exit
+        std::cout << "\033[?25h" << "\033[0m" << std::flush; // cleanup
     } else {
         std::string output = render_cells(cells, blocks_x, blocks_y, use_color);
         std::cout << output;
@@ -341,15 +342,13 @@ int main(int argc, char *argv[]) {
             glitch_interval_ms = std::stoi(argv[i + 1]);
             i += 2;
         } else if (arg[0] == '-') {
-            // Unknown flag → error
-            std::cerr << "Unknown option: " << arg << '\n';
+            std::cerr << "unknown: " << arg << '\n';
             return EXIT_FAILURE;
         } else {
-            // Assume it's the image path
             if (image_path.empty()) {
                 image_path = arg;
             } else {
-                std::cerr << "Warning: extra argument '" << arg << "' ignored\n";
+                std::cerr << "extra argument passed '" << arg << "' ignored\n";
             }
             ++i;
         }
