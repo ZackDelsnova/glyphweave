@@ -1,17 +1,31 @@
 #include <iostream>
 #include <algorithm>
 #include <vector>
-#define _USE_MATH_DEFINES
-#include <cmath>
 #include <cstdint>
 #include <execution>
 #include <string>
+#include <random>
+#include <chrono>
+#include <thread>
+#include <csignal>
+#include <atomic>
+
+#define _USE_MATH_DEFINES
+#include <cmath>
 
 #define NOMINMAX
 #include <Windows.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+std::atomic<bool> g_exit_requested = false;
+
+void signal_handler(int signal) {
+    if (signal == SIGINT) {
+        g_exit_requested = true;
+    }
+}
 
 int get_terminal_width() {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
@@ -223,8 +237,37 @@ std::string render_cells(const std::vector<Cell>& cells, int blocks_x, int block
     return output;
 }
 
-// bloack based printer
-void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_color = false) {
+// row shifter glitch
+void apply_row_shift_glitch(std::vector<Cell>& cells, int blocks_x, int blocks_y) {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<> row_dist(0, blocks_y - 1);
+    static std::uniform_int_distribution<> shift_dist(-8, 8);
+    static std::uniform_real_distribution<float> prob(0.0f, 1.0f);
+
+    // 20% of rows
+    int num_rows = std::max(1, static_cast<int>(blocks_y * 0.2f));
+    for (int i = 0; i < num_rows; ++i) {
+        int row = row_dist(gen);
+        int shift = shift_dist(gen);
+        if (shift == 0) continue;
+
+        std::vector<Cell> original_row(blocks_x);
+        int row_start = row * blocks_x;
+        for (int x = 0; x < blocks_x; ++x) {
+            original_row[x] = cells[row_start + x];
+        }
+
+        // shift with wrap around
+        for (int x = 0; x < blocks_x; ++x) {
+            int src_idx = (x - shift) % blocks_x;
+            if (src_idx < 0) src_idx += blocks_x;
+            cells[row_start + x] = original_row[src_idx];
+        }
+    }
+}
+
+void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_color = false, bool use_glitch = false, int glitch_interval_ms = 100) {
     
     // detect terminal width - windows
     int terminal_width = get_terminal_width();
@@ -241,7 +284,7 @@ void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_col
     Image resized = resize_area_average(src, TARGET_WIDTH, TARGET_HEIGHT);
 
     // gray scaled thing
-    std::vector<float> grays = prepare_grayscale(src, GAMMA, USE_NORMALIZATION);
+    std::vector<float> grays = prepare_grayscale(resized, GAMMA, USE_NORMALIZATION);
 
     // block processing
     // order 0%, 25%, 50%, 75%, 100%
@@ -254,21 +297,67 @@ void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_col
     // render                                  
     int blocks_x = (TARGET_WIDTH + block_w - 1) / block_w;
     int blocks_y = (TARGET_HEIGHT + block_h - 1) / block_h;
-    std::string output = render_cells(cells, blocks_x, blocks_y, use_color);
-    std::cout << output;
+
+    if (use_glitch) {
+        std::signal(SIGINT, signal_handler);
+        std::cout << "\033[?25l"; // hide cursor
+        while (!g_exit_requested) {
+            std::vector<Cell> glitched_cells = cells;
+            apply_row_shift_glitch(glitched_cells, blocks_x, blocks_y);
+            std::string output = render_cells(glitched_cells, blocks_x, blocks_y, use_color);
+            std::cout << "\033[2J\033[H" << output << std::flush;
+            std::this_thread::sleep_for(std::chrono::milliseconds(glitch_interval_ms));
+        }
+        std::cout << "\033[?25h" << "\033[0m" << std::flush; // clean exit
+    } else {
+        std::string output = render_cells(cells, blocks_x, blocks_y, use_color);
+        std::cout << output;
+    }
 }
 
-// glyphweave <filename> -c[optional print in color]
+// glyphweave <filename> -c[optional print in color] [--glitch] [--interval ms] (both optional)
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        std::cerr << "usage: " << argv[0] << " <filename> [-c]\n";
+        std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms]\n";
         return EXIT_FAILURE;
     }
 
     bool use_color = false;
-    std::string image_path = argv[1];
-    if (argc >= 3 && std::string(argv[2]) == "-c") {
-        use_color = true;
+    bool use_glitch = false;
+    int glitch_interval_ms = 100;
+    std::string image_path;
+    
+    // argument parser
+    int i = 1;
+    while (i < argc) {
+        std::string arg = argv[i];
+        if (arg == "-c" || arg == "--color") {
+            use_color = true;
+            ++i;
+        } else if (arg == "--glitch") {
+            use_glitch = true;
+            ++i;
+        } else if (arg == "--interval" && i + 1 < argc) {
+            glitch_interval_ms = std::stoi(argv[i + 1]);
+            i += 2;
+        } else if (arg[0] == '-') {
+            // Unknown flag → error
+            std::cerr << "Unknown option: " << arg << '\n';
+            return EXIT_FAILURE;
+        } else {
+            // Assume it's the image path
+            if (image_path.empty()) {
+                image_path = arg;
+            } else {
+                std::cerr << "Warning: extra argument '" << arg << "' ignored\n";
+            }
+            ++i;
+        }
+    }
+
+    if (image_path.empty()) {
+        std::cerr << "no image provided\n";
+        return EXIT_FAILURE;
     }
 
     int width, height, channels;
@@ -278,7 +367,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
     
-    print_ascii(pixels, width, height, channels, use_color);
+    print_ascii(pixels, width, height, channels, use_color, use_glitch, glitch_interval_ms);
     stbi_image_free(pixels);
     return 0;
 }
