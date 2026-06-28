@@ -10,6 +10,7 @@
 #include <csignal>
 #include <atomic>
 #include <fstream>
+#include <cctype>
 
 #define _USE_MATH_DEFINES
 #include <cmath>
@@ -37,6 +38,20 @@ int get_terminal_width() {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
     return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+}
+
+bool is_gif_file(std::string& path) {
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".gif";
+}
+
+std::string get_filename_without_extension(const std::string& path) {
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return path;
+    return path.substr(0, dot);
 }
 
 struct Cell {
@@ -262,6 +277,12 @@ ProcessedImage process_image(unsigned char *pixels, int w, int h, int channels, 
     return result;
 }
 
+// process frames
+ProcessedImage process_frame(unsigned char* frame_pixels, int width, int height, 
+                             int channels, bool use_color, int target_width) {
+    return process_image(frame_pixels, width, height, channels, use_color, target_width);
+}
+
 // render to console
 std::string render_to_console(const ProcessedImage& img, bool use_color) {
     std::string output;
@@ -354,70 +375,58 @@ void apply_row_shift_glitch(std::vector<Cell>& cells, int blocks_x, int blocks_y
 }
 
 // save as gif
-void render_to_gif(const ProcessedImage& base_img, const std::string& filename,
-                   bool use_color, bool use_glitch, int interval_ms = 100,
-                   int duration_seconds = 5, int cell_w = 8, int cell_h = 12) {
-    int image_w = base_img.blocks_x * cell_w;
-    int image_h = base_img.blocks_y * cell_h;
-    // frames = duration/interval
-    int num_frames = (duration_seconds * 1000) / interval_ms;
-    num_frames = std::clamp(num_frames, 1, 200);
+void render_to_gif(const std::vector<ProcessedImage>& frames, const std::vector<int>& delays, const std::string& filename,
+                   bool use_color, int cell_w = 8, int cell_h = 12) {
+    if (frames.empty()) return;
+
+    const auto& first = frames[0];
+    int image_w = first.blocks_x * cell_w;
+    int image_h = first.blocks_y * cell_h;
+    int default_delay = (delays.empty() || delays[0] <= 0) ? 100 : delays[0];
 
     GifWriter writer;
-    if (!GifBegin(&writer, filename.c_str(), image_w, image_h, interval_ms)) {
-        std::cerr << "failed to gif: " << filename << '\n';
+    if (!GifBegin(&writer, filename.c_str(), image_w, image_h, default_delay)) {
+        std::cerr << "failed to write to gif\n";
         return;
     }
 
     // frame buffer - gif.h needs RGBA
-    std::vector<unsigned char> frame(image_w * image_h * 4, 0);
+    std::vector<unsigned char> frame_rgba(image_w * image_h * 4, 0);
 
-    // frame filling helper
-    auto fill_frame = [&](const std::vector<Cell>& cells) {
-        for (int by = 0; by < base_img.blocks_y; ++by) {
-            for (int bx = 0; bx < base_img.blocks_x; ++bx) {
-                const Cell& cell = cells[by * base_img.blocks_x + bx];
-                unsigned char fg_r, fg_g, fg_b;
+    for (size_t f = 0; f < frames.size(); ++f) {
+        const auto& img = frames[f];
+        // filling
+        for (int by = 0; by < img.blocks_y; ++by) {
+            for (int bx = 0; bx < img.blocks_x; ++bx) {
+                const Cell& cell = img.cells[by * img.blocks_x + bx];
+                unsigned char r, g, b;
                 if (use_color) {
-                    fg_r = cell.r; fg_g = cell.g; fg_b = cell.b;
+                    r = cell.r; g = cell.g; b = cell.b;
                 } else {
                     // BT.709 luminance
                     unsigned char gray = static_cast<unsigned char>(
                         0.2126f * cell.r + 0.7152f * cell.g + 0.0722f * cell.b
                     );
-                    fg_r = fg_g = fg_b = gray;
+                    r = g = b = gray;
                 }
-                int x0 = bx * cell_w;
-                int y0 = by * cell_h;
+                int x0 = bx * cell_w, y0 = by * cell_h;
                 for (int dy = 0; dy < cell_h; ++dy) {
                     for (int dx = 0; dx < cell_w; ++dx) {
                         int idx = ((y0 + dy) * image_w + (x0 + dx)) * 4;
-                        frame[idx] = fg_r;
-                        frame[idx+1] = fg_g;
-                        frame[idx+2] = fg_b;
-                        frame[idx+3] = 255; // fully opaque for alpha
+                        frame_rgba[idx] = r;
+                        frame_rgba[idx+1] = g;
+                        frame_rgba[idx+2] = b;
+                        frame_rgba[idx+3] = 255;
                     }
-                } 
+                }
             }
         }
-    };
-
-    // gen frame
-    if (use_glitch) {
-        for (int f = 0; f < num_frames; ++f) {
-            std::vector<Cell> glitched = base_img.cells;
-            apply_row_shift_glitch(glitched, base_img.blocks_x, base_img.blocks_y);
-            fill_frame(glitched);
-            GifWriteFrame(&writer, frame.data(), image_w, image_h, interval_ms);
-        }
-    } else {
-        // 1 frame alone
-        fill_frame(base_img.cells);
-        GifWriteFrame(&writer, frame.data(), image_w, image_h, interval_ms);
+        int delay = (f < delays.size() && delays[f] > 0) ? delays[f] : default_delay;
+        GifWriteFrame(&writer, frame_rgba.data(), image_w, image_h, delay);
     }
 
     GifEnd(&writer);
-    std::cout << "gif saved: " << filename << '\n';
+    std::cout << "gif saved: " << filename << '\n'; 
 }
 
 // output with glitch loop
@@ -435,6 +444,39 @@ void print_with_glitch(const ProcessedImage& base_img, bool use_color, int inter
     std::cout << "\033[?25h" << "\033[0m" << std::flush;
 }
 
+// gif animation
+void animate_gif_in_console(const std::vector<ProcessedImage>& frames, const std::vector<int>& delays,
+                            bool use_color, bool use_glitch) {
+    std::signal(SIGINT, signal_handler);
+    std::cout << "\033[?25l"; // hide cursor
+
+    size_t frame_count = frames.size();
+    while (!g_exit_requested) {
+        for (size_t i = 0; i < frame_count; ++i) {
+            if (g_exit_requested) break;
+
+            std::vector<Cell> cells = frames[i].cells;
+            if (use_glitch) {
+                apply_row_shift_glitch(cells, frames[i].blocks_x, frames[i].blocks_y);
+            }
+
+            ProcessedImage temp;
+            temp.cells = std::move(cells);
+            temp.blocks_x = frames[i].blocks_x;
+            temp.blocks_y = frames[i].blocks_y;
+            temp.target_width = frames[i].target_width;
+            temp.target_height = frames[i].target_height;
+
+            std::string output = render_to_console(temp, use_color);
+            std::cout << "\033[2J\033[H" << output << std::flush;
+
+            int delay = (i < delays.size() && delays[i] > 0) ? delays[i] : 100;
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        }
+    }
+    std::cout << "\033[?25h" << "\033[0m" << std::flush;
+}
+
 // file saving .txt
 void save_to_file(const std::string& content, const std::string& filename) {
     std::ofstream file(filename);
@@ -447,7 +489,7 @@ void save_to_file(const std::string& content, const std::string& filename) {
     std::cout << "saved: " << filename << '\n';
 }
 
-// glyphweave <filename> -c[optional print in color] [--glitch] [--interval ms] (both optional)
+// glyphweave <filename> (can be static image or gif) -c[optional print in color] [--glitch] [--interval ms] (both optional)
 // [-o/--output only for .txt file] [--png filename] [--gif filename] [--width for custom width or default terminal width]
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -520,43 +562,119 @@ int main(int argc, char *argv[]) {
     }
 
     int width, height, channels;
-    unsigned char *pixels = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
-    if (!pixels) {
-        std::cerr << "failed to load image: " << image_path << '\n';
-        return EXIT_FAILURE;
-    }
+    unsigned char *pixels = nullptr;
+    std::vector<ProcessedImage> frames; // for gif
+    std::vector<int> delays; // per-frame delay
 
-    int width_to_use;
-    if (!output_file.empty()) {
-        width_to_use = (target_width > 0) ? target_width : 600;
-    } else {
-        if (target_width > 0) {
-            width_to_use = target_width;
-        } else {
-            width_to_use = get_terminal_width() - 2; // margin
+    if (is_gif_file(image_path)) {
+        // gif input    
+        std::ifstream file(image_path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            std::cerr << "cant open: " << image_path << '\n';
+            return EXIT_FAILURE;
         }
-    }
-    width_to_use = std::max(80, width_to_use);
+        std::streamsize size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::vector<unsigned char> buffer(size);
+        if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+            std::cerr << "failed to read file\n";
+            return EXIT_FAILURE;
+        }
 
-    ProcessedImage img = process_image(pixels, width, height, channels, use_color, width_to_use);
+        int *delay_ptr = nullptr;
+        int frame_count = 0;
+        pixels = stbi_load_gif_from_memory(
+            buffer.data(), buffer.size(), &delay_ptr,
+            &width, &height, &frame_count, &channels, 3
+        );
+        if (!pixels) {
+            std::cerr << "failed to load gif: " << image_path << '\n';
+            return EXIT_FAILURE;
+        }
 
-    // output decision
-    if (!png_file.empty()) {
-        render_to_png(img, png_file, use_color);
+        if (delay_ptr) {
+            delays.assign(delay_ptr, delay_ptr + frame_count);
+            free(delay_ptr);
+        } else {
+            delays.assign(frame_count, 100);
+        }
+
+        // process frames
+        int frame_bytes = width * height * 3;
+        for (int f = 0; f < frame_count; ++f) {
+            unsigned char *frame_pixels = pixels + (f * frame_bytes);
+            int width_to_use;
+            if (!output_file.empty() || !png_file.empty() || !gif_file.empty()) {
+                width_to_use = (target_width > 0) ? target_width : 600;
+            } else {
+                width_to_use = (target_width > 0) ? target_width : get_terminal_width() - 2;
+            }
+            width_to_use = std::max(80, width_to_use);
+            
+            frames.push_back(process_image(frame_pixels, width, height, channels, use_color, width_to_use));
+        }
+
+        stbi_image_free(pixels);
+
+        if (!gif_file.empty()) {
+            // save as gif animated
+            render_to_gif(frames, delays, gif_file, use_color);
+        } else if (!png_file.empty()) {
+            // 1st frame alone as .png
+            std::cerr << "warning gif input, png output - saving only 1st frame.\n";
+            render_to_png(frames[0], png_file, use_color);
+        } else if (!output_file.empty()) {
+            // 1st frame alone as .txt
+            std::cerr << "warning gif input, text output - saving only 1st frame.\n";
+            std::string text = render_to_console(frames[0], use_color);
+            save_to_file(text, output_file);
+        } else {
+            // console animation
+            animate_gif_in_console(frames, delays, use_color, use_glitch);
+        }
+
+    } else {
+        // static input
+        pixels = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
+        if (!pixels) {
+            std::cerr << "failed to load image: " << image_path << '\n';
+            return EXIT_FAILURE;
+        }
+
+        int width_to_use;
+        if (!output_file.empty()) {
+            width_to_use = (target_width > 0) ? target_width : 600;
+        } else {
+            if (target_width > 0) {
+                width_to_use = target_width;
+            } else {
+                width_to_use = get_terminal_width() - 2; // margin
+            }
+        }
+        width_to_use = std::max(80, width_to_use);
+
+        ProcessedImage img = process_image(pixels, width, height, channels, use_color, width_to_use);
+
+        // output decision
+        if (!png_file.empty()) {
+            render_to_png(img, png_file, use_color);
+        }
+        if (!gif_file.empty()) {
+            std::vector<ProcessedImage> single_frame = {img};
+            std::vector<int> single_delay = {100};
+            render_to_gif(single_frame, single_delay, gif_file, use_color);
+        }
+        if (!output_file.empty()) {
+            std::string text = render_to_console(img, use_color);
+            save_to_file(text, output_file);
+        }
+        // no output - print to console
+        if (output_file.empty() && png_file.empty() && gif_file.empty()) {
+            if (use_glitch) print_with_glitch(img, use_color, glitch_interval_ms);
+            else std::cout << render_to_console(img, use_color);
+        }
+        
+        stbi_image_free(pixels);
     }
-    if (!gif_file.empty()) {
-        render_to_gif(img, gif_file, use_color, use_glitch, glitch_interval_ms);
-    }
-    if (!output_file.empty()) {
-        std::string text = render_to_console(img, use_color);
-        save_to_file(text, output_file);
-    }
-    // no output - print to console
-    if (output_file.empty() && png_file.empty() && gif_file.empty()) {
-        if (use_glitch) print_with_glitch(img, use_color, glitch_interval_ms);
-        else std::cout << render_to_console(img, use_color);
-    }
-    
-    stbi_image_free(pixels);
     return 0;
 }
