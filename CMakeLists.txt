@@ -8,8 +8,29 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(STB_INCLUDE_DIR "C:/devlibs/stb")
 set(GIFH_INCLUDE_DIR "C:/devlibs/gif-h")
 
-add_executable(glyphweave 
+set(PROJECT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+set(SOURCES
     src/main.cpp
+    src/image_loader.cpp
+    src/processor.cpp
+    src/renderer.cpp
+    src/glitch.cpp
 )
 
-target_include_directories(glyphweave PRIVATE ${STB_INCLUDE_DIR} ${GIFH_INCLUDE_DIR})
+set(HEADERS
+    include/types.hpp
+    include/utils.hpp
+    include/image_loader.hpp
+    include/processor.hpp
+    include/renderer.hpp
+    include/glitch.hpp
+)
+
+add_executable(glyphweave ${SOURCES} ${HEADERS})
+
+target_include_directories(glyphweave PRIVATE
+    ${PROJECT_INCLUDE_DIR}
+    ${STB_INCLUDE_DIR}
+    ${GIFH_INCLUDE_DIR}
+)
