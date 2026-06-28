@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <vector>
 #include <cstdint>
-#include <execution>
 #include <string>
 #include <random>
 #include <chrono>
@@ -11,8 +10,8 @@
 #include <atomic>
 #include <fstream>
 #include <cctype>
-
-#define _USE_MATH_DEFINES
+#include <optional>
+#include <cstdlib>
 #include <cmath>
 
 #define NOMINMAX
@@ -34,6 +33,10 @@ void signal_handler(int signal) {
     }
 }
 
+void restore_cursor() {
+    std::cout << "\033[?25h" << std::flush; // show cursor
+}
+
 int get_terminal_width() {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
@@ -46,12 +49,6 @@ bool is_gif_file(std::string& path) {
     std::string ext = path.substr(dot);
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     return ext == ".gif";
-}
-
-std::string get_filename_without_extension(const std::string& path) {
-    size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) return path;
-    return path.substr(0, dot);
 }
 
 struct Cell {
@@ -158,75 +155,86 @@ std::vector<Cell> process_blocks(
     int blocks_y = (img_h + block_h - 1) / block_h;
     std::vector<Cell> cells(blocks_x * blocks_y);
 
-    // error diffusion
-    std::vector<float> errors(img_w * img_h, 0.0f);
+    // per-block error accumulator
+    std::vector<float> block_errors(img_w * img_h, 0.0f);
     const int NUM_BLOCKS = block_chars.size();
+
+    // pre compute block sum for speed
+    std::vector<float> block_sums(blocks_x * blocks_y, 0.0f);
+    std::vector<int> block_counts(blocks_x * blocks_y, 0.0);
 
     for (int by = 0; by < blocks_y; ++by) {
         for (int bx = 0; bx < blocks_x; ++bx) {
-            int x0 = bx * block_w;
-            int y0 = by * block_h;
-
-            // avg grayscale + error
+            int x0 = bx * block_w, y0 = by * block_h;
             float sum = 0.0f;
             int count = 0;
             for (int dy = 0; dy < block_h; ++dy) {
                 for (int dx = 0; dx < block_w; ++dx) {
-                    int px = x0 + dx;
-                    int py = y0 + dy;
+                    int px = x0 + dx, py = y0 + dy;
                     if (px < img_w && py < img_h) {
-                        int idx = py * img_w + px;
-                        sum += grays[idx] + errors[idx];
+                        sum += grays[py * img_w + px];
                         ++count;
                     }
                 }
             }
+            block_sums[by * blocks_x + bx] = sum;
+            block_counts[by * blocks_x + bx] = count;
+        }
+    }
 
+    // block processing in raster order
+    for (int by = 0; by < blocks_y; ++by) {
+        for (int bx = 0; bx < blocks_x; ++bx) {
+            int idx = by * blocks_x + bx;
+            float sum = block_sums[idx] + block_errors[idx]; // add accumulated error
+            int count = block_counts[idx];
             if (count == 0) continue;
+
             float avg = sum / count;
             avg = std::clamp(avg, 0.0f, 255.0f);
 
-            // quantize
+            // quantise to char index
             float norm = avg / 255.0f;
             int char_idx = static_cast<int>(norm * (NUM_BLOCKS - 1) + 0.5f);
             char_idx = std::clamp(char_idx, 0, NUM_BLOCKS - 1);
             char ch = block_chars[char_idx];
 
+            // quantised value and error
             float quantized = (char_idx / (float)(NUM_BLOCKS - 1)) * 255.0f;
             float error = avg - quantized;
 
-            // distrubute error by floyd-steinberg
+            // floyd-steinberg error dist
+            // 7/16 (right), 3/16 (bottom‑left), 5/16 (bottom), 1/16 (bottom‑right)
             float weight = 1.0f / 16.0f;
-            if (x0 + block_w < img_w) {
-                errors[y0 * img_w + (x0 + block_w)] += error * 7.0f * weight;
+            if (bx + 1 < blocks_x) {
+                block_errors[by * blocks_x + (bx + 1)] += error * 7.0f / weight;
             }
-            if (y0 + block_h < img_h) {
-                if (x0 > 0) {
-                    errors[(y0 + block_h) * img_w + (x0 - 1)] += error * 3.0f * weight;
-                }
-                errors[(y0 + block_h) * img_w + x0] += error * 5.0f * weight;
-                if (x0 + block_w < img_w) {
-                    errors[(y0 + block_h) * img_w + (x0 + block_w)] += error * 1.0f * weight;
-                }
+            if (by + 1 < blocks_y) {
+                if (bx > 0)
+                    block_errors[(by + 1) * blocks_x + (bx - 1)] += error * 3.0f * weight;
+                block_errors[(by + 1) * blocks_x + bx] += error * 5.0f * weight;
+                if (bx + 1 < blocks_x)
+                    block_errors[(by + 1) * blocks_x + (bx + 1)] += error * 1.0f * weight;
             }
 
             // avg rgb
             int sum_r = 0, sum_g = 0, sum_b = 0;
             int rgb_count = 0;
+            int x0 = bx * block_w, y0 = by * block_h;
             for (int dy = 0; dy < block_h; ++dy) {
                 for (int dx = 0; dx < block_w; ++dx) {
                     int px = x0 + dx, py = y0 + dy;
                     if (px < img_w && py < img_h) {
-                        int idx = (py * img_w + px) * 3;
-                        sum_r += rgb_img.data[idx];
-                        sum_g += rgb_img.data[idx + 1];
-                        sum_b += rgb_img.data[idx + 2];
+                        int pidx = (py * img_w + px) * 3;
+                        sum_r += rgb_img.data[pidx];
+                        sum_g += rgb_img.data[pidx + 1];
+                        sum_b += rgb_img.data[pidx + 2];
                         ++rgb_count;
                     }
                 }
             }
 
-            Cell& cell = cells[by * blocks_x + bx];
+            Cell& cell = cells[idx];
             cell.ch = ch;
             if (rgb_count > 0) {
                 cell.r = sum_r / rgb_count;
@@ -263,8 +271,8 @@ ProcessedImage process_image(unsigned char *pixels, int w, int h, int channels, 
     // block processing
     // order 0%, 25%, 50%, 75%, 100%
     // each block is 2x2
-    const int block_w = 2, block_h = 2;
-    const std::string BLOCKS = " ░▒▓█";   // space, light, medium, dark, full
+    const int block_w = 1, block_h = 1;
+    const std::string BLOCKS = " ▁▂▃▄▅▆▇█"; // blocks
     std::vector<Cell> cells = process_blocks(grays, resized, target_width, TARGET_HEIGHT,
                                             block_w, block_h, BLOCKS, use_color);
 
@@ -286,20 +294,29 @@ ProcessedImage process_frame(unsigned char* frame_pixels, int width, int height,
 // render to console
 std::string render_to_console(const ProcessedImage& img, bool use_color) {
     std::string output;
-    output.reserve(img.blocks_x * img.blocks_y * 20);
+    output.reserve(img.blocks_x * img.blocks_y * 30); // estimate
+
     for (int by = 0; by < img.blocks_y; ++by) {
         for (int bx = 0; bx < img.blocks_x; ++bx) {
             const Cell& cell = img.cells[by * img.blocks_x + bx];
             if (use_color) {
-                output += "\033[38;2;" + std::to_string(cell.r) + ";" + std::to_string(cell.g) + ";" + std::to_string(cell.b) + "m"; // fg
-                output += "\033[48;2;" + std::to_string(cell.br) + ";" + std::to_string(cell.bg) + ";" + std::to_string(cell.bb) + "m"; //bg
-                output += cell.ch;
-                output += "\033[0m"; // clear
+                output.append("\033[38;2;");
+                output.append(std::to_string(cell.r)).push_back(';');
+                output.append(std::to_string(cell.g)).push_back(';');
+                output.append(std::to_string(cell.b)).push_back('m');
+
+                output.append("\033[48;2;");
+                output.append(std::to_string(cell.br)).push_back(';');
+                output.append(std::to_string(cell.bg)).push_back(';');
+                output.append(std::to_string(cell.bb)).push_back('m');
+
+                output.push_back(cell.ch);
+                output.append("\033[0m");
             } else {
-                output += cell.ch;
+                output.push_back(cell.ch);
             }
         }
-        output += '\n';
+        output.push_back('\n');
     }
     return output;
 }
@@ -309,10 +326,6 @@ void render_to_png(const ProcessedImage& img, const std::string& filename, bool 
     int image_w = img.blocks_x * cell_w;
     int image_h = img.blocks_y * cell_h;
     std::vector<unsigned char> pixels(image_w * image_h * 3, 0);
-
-    auto get_cell_color = [&](const Cell& cell) -> std::tuple<unsigned char, unsigned char, unsigned char> {
-        
-    };
 
     for (int by = 0; by < img.blocks_y; ++by) {
         for (int bx = 0; bx < img.blocks_x; ++bx) {
@@ -382,10 +395,12 @@ void render_to_gif(const std::vector<ProcessedImage>& frames, const std::vector<
     const auto& first = frames[0];
     int image_w = first.blocks_x * cell_w;
     int image_h = first.blocks_y * cell_h;
-    int default_delay = (delays.empty() || delays[0] <= 0) ? 100 : delays[0];
+    // use time in centiseconds 
+    int default_delay_cs = (delays.empty() || delays[0] <= 0) ? 10 : delays[0] / 10;
+    if (default_delay_cs < 1) default_delay_cs = 1;
 
     GifWriter writer;
-    if (!GifBegin(&writer, filename.c_str(), image_w, image_h, default_delay)) {
+    if (!GifBegin(&writer, filename.c_str(), image_w, image_h, default_delay_cs)) {
         std::cerr << "failed to write to gif\n";
         return;
     }
@@ -421,8 +436,9 @@ void render_to_gif(const std::vector<ProcessedImage>& frames, const std::vector<
                 }
             }
         }
-        int delay = (f < delays.size() && delays[f] > 0) ? delays[f] : default_delay;
-        GifWriteFrame(&writer, frame_rgba.data(), image_w, image_h, delay);
+        int delay_cs = (f < delays.size() && delays[f] > 0) ? delays[f] / 10 : default_delay_cs;
+        if (delay_cs < 1) delay_cs = 1;
+        GifWriteFrame(&writer, frame_rgba.data(), image_w, image_h, delay_cs);
     }
 
     GifEnd(&writer);
@@ -492,10 +508,17 @@ void save_to_file(const std::string& content, const std::string& filename) {
 // glyphweave <filename> (can be static image or gif) -c[optional print in color] [--glitch] [--interval ms] (both optional)
 // [-o/--output only for .txt file] [--png filename] [--gif filename] [--width for custom width or default terminal width]
 int main(int argc, char *argv[]) {
+    atexit(restore_cursor);
+
     if (argc < 2) {
         std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms] [-o output.txt] [--width]\n";
         return EXIT_FAILURE;
     }
+
+    auto parse_int = [](const char* s) -> std::optional<int> {
+        try { return std::stoi(s); }
+        catch (...) { return std::nullopt; }
+    };
 
     int target_width = 0; // 0 = auto detect console width
     bool use_color = false, use_glitch = false;
@@ -511,8 +534,8 @@ int main(int argc, char *argv[]) {
         } else if (arg == "--glitch") {
             use_glitch = true;
         } else if (arg == "--interval") {
-            if (i + 1 < argc) {
-                glitch_interval_ms = std::stoi(argv[++i]);
+            if (auto parsed = parse_int(argv[++i]); parsed) {
+                glitch_interval_ms = *parsed;
             } else {
                 std::cerr << "error: --interval needs a value\n";
                 return EXIT_FAILURE;
@@ -539,8 +562,8 @@ int main(int argc, char *argv[]) {
                 return EXIT_FAILURE;
             }
         } else if (arg == "--width") {
-            if (i + 1 < argc) {
-                target_width = std::stoi(argv[++i]);
+            if (auto parsed = parse_int(argv[++i]); parsed) {
+                target_width = *parsed;
             } else {
                 std::cerr << "error: --width needs a number\n";
                 return EXIT_FAILURE;
