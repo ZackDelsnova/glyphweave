@@ -40,12 +40,20 @@ struct Cell {
     unsigned char br, bg, bb; // bg
 };
 
-// area avg resize
 struct Image {
     int w, h, c;
     std::vector<unsigned char> data;
 };
 
+struct ProcessedImage {
+    std::vector<Cell> cells;
+    int blocks_x;
+    int blocks_y;
+    int target_width;
+    int target_height;
+};
+
+// area avg resize
 void get_avg(const Image& src, unsigned char *out, int x1, int x2, int y1, int y2) {
     float r = 0, g = 0, b = 0;
     int count = 0;
@@ -117,6 +125,7 @@ std::vector<float> prepare_grayscale(const Image& img, float gamma, bool normali
     return grays;
 }
 
+// block-based dithering processing with error diffusion 
 std::vector<Cell> process_blocks(
     const std::vector<float>& grays,
     const Image& rgb_img, // resized rgb img
@@ -217,73 +226,17 @@ std::vector<Cell> process_blocks(
     return cells;
 }
 
-std::string render_cells(const std::vector<Cell>& cells, int blocks_x, int blocks_y, bool use_color) {
-    std::string output;
-    output.reserve(blocks_x * blocks_y * 20); // rughly with ansi
-    for (int by = 0; by < blocks_y; ++by) {
-        for (int bx = 0; bx < blocks_x; ++bx) {
-            const Cell& cell = cells[by * blocks_x + bx];
-            if (use_color) {
-                output += "\033[38;2;" + std::to_string(cell.r) + ";" + std::to_string(cell.g) + ";" + std::to_string(cell.b) + "m"; // fg
-                output += "\033[48;2;" + std::to_string(cell.br) + ";" + std::to_string(cell.bg) + ";" + std::to_string(cell.bb) + "m"; // bg
-                output += cell.ch;
-                output += "\033[0m"; // clear
-            } else {
-                output += cell.ch;
-            }
-        }
-        output += '\n';
-    }
-    
-    return output;
-}
-
-// row shifter glitch
-void apply_row_shift_glitch(std::vector<Cell>& cells, int blocks_x, int blocks_y) {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<> row_dist(0, blocks_y - 1);
-    static std::uniform_int_distribution<> shift_dist(-8, 8);
-    static std::uniform_real_distribution<float> prob(0.0f, 1.0f);
-
-    // 20% of rows
-    int num_rows = std::max(1, static_cast<int>(blocks_y * 0.2f));
-    for (int i = 0; i < num_rows; ++i) {
-        int row = row_dist(gen);
-        int shift = shift_dist(gen);
-        if (shift == 0) continue;
-
-        std::vector<Cell> original_row(blocks_x);
-        int row_start = row * blocks_x;
-        for (int x = 0; x < blocks_x; ++x) {
-            original_row[x] = cells[row_start + x];
-        }
-
-        // shift with wrap around
-        for (int x = 0; x < blocks_x; ++x) {
-            int src_idx = (x - shift) % blocks_x;
-            if (src_idx < 0) src_idx += blocks_x;
-            cells[row_start + x] = original_row[src_idx];
-        }
-    }
-}
-
-void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_color = false, bool use_glitch = false, int glitch_interval_ms = 100) {
-    
-    // detect terminal width - windows
-    int terminal_width = get_terminal_width();
-    
-    // tuneable
-    const int TARGET_WIDTH = std::max(80, terminal_width - 2); // use almost full screen
+// main processing
+ProcessedImage process_image(unsigned char *pixels, int w, int h, int channels, bool use_color, int target_width) {
+    // main parameters
     const float CHAR_ASPECT = 2.0f;
     const float GAMMA = 1.0f;
     const bool USE_NORMALIZATION = true;
-    const int TARGET_HEIGHT = std::max(1, static_cast<int>((TARGET_WIDTH * h) / (w * CHAR_ASPECT)));
+    const int TARGET_HEIGHT = std::max(1, static_cast<int>((target_width * h) / (w * CHAR_ASPECT)));
 
     // src image wrapper
     Image src{w, h, 3, std::vector<unsigned char>(pixels, pixels + w*h*3)};
-    Image resized = resize_area_average(src, TARGET_WIDTH, TARGET_HEIGHT);
-
+    Image resized = resize_area_average(src, target_width, TARGET_HEIGHT);
     // gray scaled thing
     std::vector<float> grays = prepare_grayscale(resized, GAMMA, USE_NORMALIZATION);
 
@@ -292,65 +245,140 @@ void print_ascii(unsigned char *pixels, int w, int h, int channels, bool use_col
     // each block is 2x2
     const int block_w = 2, block_h = 2;
     const std::string BLOCKS = " ░▒▓█";   // space, light, medium, dark, full
-    std::vector<Cell> cells = process_blocks(grays, resized, TARGET_WIDTH, TARGET_HEIGHT,
+    std::vector<Cell> cells = process_blocks(grays, resized, target_width, TARGET_HEIGHT,
                                             block_w, block_h, BLOCKS, use_color);
 
-    // render                                  
-    int blocks_x = (TARGET_WIDTH + block_w - 1) / block_w;
-    int blocks_y = (TARGET_HEIGHT + block_h - 1) / block_h;
+    ProcessedImage result;
+    result.cells = std::move(cells);
+    result.blocks_x = (target_width + block_w - 1) / block_w;
+    result.blocks_y = (TARGET_HEIGHT + block_h - 1) / block_h;
+    result.target_width = target_width;
+    result.target_height = TARGET_HEIGHT;
+    return result;
+}
 
-    if (use_glitch) {
-        std::signal(SIGINT, signal_handler);
-        std::cout << "\033[?25l"; // hide cursor
-        while (!g_exit_requested) {
-            std::vector<Cell> glitched_cells = cells;
-            apply_row_shift_glitch(glitched_cells, blocks_x, blocks_y);
-            std::string output = render_cells(glitched_cells, blocks_x, blocks_y, use_color);
-            std::cout << "\033[2J\033[H" << output << std::flush;
-            std::this_thread::sleep_for(std::chrono::milliseconds(glitch_interval_ms));
+// render to console
+std::string render_to_console(const ProcessedImage& img, bool use_color) {
+    std::string output;
+    output.reserve(img.blocks_x * img.blocks_y * 20);
+    for (int by = 0; by < img.blocks_y; ++by) {
+        for (int bx = 0; bx < img.blocks_x; ++bx) {
+            const Cell& cell = img.cells[by * img.blocks_x + bx];
+            if (use_color) {
+                output += "\033[38;2;" + std::to_string(cell.r) + ";" + std::to_string(cell.g) + ";" + std::to_string(cell.b) + "m"; // fg
+                output += "\033[48;2;" + std::to_string(cell.br) + ";" + std::to_string(cell.bg) + ";" + std::to_string(cell.bb) + "m"; //bg
+                output += cell.ch;
+                output += "\033[0m"; // clear
+            } else {
+                output += cell.ch;
+            }
         }
-        std::cout << "\033[?25h" << "\033[0m" << std::flush; // cleanup
-    } else {
-        std::string output = render_cells(cells, blocks_x, blocks_y, use_color);
-        std::cout << output;
+        output += '\n';
+    }
+    return output;
+}
+
+// row shifter glitch effect
+void apply_row_shift_glitch(std::vector<Cell>& cells, int blocks_x, int blocks_y) {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<> row_dist(0, blocks_y - 1);
+    static std::uniform_int_distribution<> shift_dist(-8, 8);
+
+    int num_rows = std::max(1, static_cast<int>(blocks_y * 0.2f));
+    for (int i = 0; i < num_rows; ++i) {
+        int row = row_dist(gen);
+        int shift = shift_dist(gen);
+        if (shift == 0) continue;
+        std::vector<Cell> original_row(blocks_x);
+        int row_start = row * blocks_x;
+        for (int x = 0; x < blocks_x; ++x)
+            original_row[x] = cells[row_start + x];
+        for (int x = 0; x < blocks_x; ++x) {
+            int src_idx = (x - shift) % blocks_x;
+            if (src_idx < 0) src_idx += blocks_x;
+            cells[row_start + x] = original_row[src_idx];
+        }
     }
 }
 
-// glyphweave <filename> -c[optional print in color] [--glitch] [--interval ms] (both optional)
+// output with glitch loop
+void print_with_glitch(const ProcessedImage& base_img, bool use_color, int interval_ms) {
+    std::signal(SIGINT, signal_handler);
+    std::cout << "\033[?25l"; // hide cursor
+    while (!g_exit_requested) {
+        std::vector<Cell> glitched_cells = base_img.cells;
+        apply_row_shift_glitch(glitched_cells, base_img.blocks_x, base_img.blocks_y);
+        std::string output = render_to_console({glitched_cells, base_img.blocks_x, base_img.blocks_y,
+                                                base_img.target_width, base_img.target_height}, use_color);
+        std::cout << "\033[2J\033[H" << output << std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+    }
+    std::cout << "\033[?25h" << "\033[0m" << std::flush;
+}
+
+// file saving .txt
+void save_to_file(const std::string& content, const std::string& filename) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "error writing to file: " << filename << '\n';
+        return;
+    }
+    file << content;
+    file.close();
+    std::cout << "saved: " << filename << '\n';
+}
+
+// glyphweave <filename> -c[optional print in color] [--glitch] [--interval ms] (both optional) [-o noly does .txt file for now]
+// [--width for custom width or default terminal width]
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms]\n";
+        std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms] [-o output.txt] [--width]\n";
         return EXIT_FAILURE;
     }
 
-    bool use_color = false;
-    bool use_glitch = false;
+    int target_width = 0; // 0 = auto detect console width
+    bool use_color = false, use_glitch = false;
     int glitch_interval_ms = 100;
     std::string image_path;
+    std::string output_file;
     
     // argument parser
-    int i = 1;
-    while (i < argc) {
+    for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-c" || arg == "--color") {
             use_color = true;
-            ++i;
         } else if (arg == "--glitch") {
             use_glitch = true;
-            ++i;
-        } else if (arg == "--interval" && i + 1 < argc) {
-            glitch_interval_ms = std::stoi(argv[i + 1]);
-            i += 2;
+        } else if (arg == "--interval") {
+            if (i + 1 < argc) {
+                glitch_interval_ms = std::stoi(argv[++i]);
+            } else {
+                std::cerr << "error: --interval needs a value\n";
+                return EXIT_FAILURE;
+            }
+        } else if (arg == "-o" || arg == "--output") {
+            if (i + 1 < argc) {
+                output_file = argv[++i];
+            } else {
+                std::cerr << "error: -o needs a filename\n";
+                return EXIT_FAILURE;
+            }
+        } else if (arg == "--width") {
+            if (i + 1 < argc) {
+                target_width = std::stoi(argv[++i]);
+            } else {
+                std::cerr << "error: --width needs a number\n";
+                return EXIT_FAILURE;
+            }
         } else if (arg[0] == '-') {
-            std::cerr << "unknown: " << arg << '\n';
+            std::cerr << "Unknown option: " << arg << '\n';
             return EXIT_FAILURE;
         } else {
-            if (image_path.empty()) {
+            if (image_path.empty())
                 image_path = arg;
-            } else {
-                std::cerr << "extra argument passed '" << arg << "' ignored\n";
-            }
-            ++i;
+            else
+                std::cerr << "extra argument '" << arg << "' ignored\n";
         }
     }
 
@@ -365,8 +393,37 @@ int main(int argc, char *argv[]) {
         std::cerr << "failed to load image: " << image_path << '\n';
         return EXIT_FAILURE;
     }
+
+    int width_to_use;
+    if (!output_file.empty()) {
+        width_to_use = (target_width > 0) ? target_width : 600;
+    } else {
+        if (target_width > 0) {
+            width_to_use = target_width;
+        } else {
+            width_to_use = get_terminal_width() - 2; // margin
+        }
+    }
+    width_to_use = std::max(80, width_to_use);
+
+    ProcessedImage img = process_image(pixels, width, height, channels, use_color, width_to_use);
+
+    // output decision
+    if (!output_file.empty()) {
+        if (use_glitch) {
+            std::cerr << "glitch mode ignored when saving to file\n";
+        }
+        std::string output = render_to_console(img, use_color);
+        save_to_file(output, output_file);
+    } else {
+        if (use_glitch) {
+            print_with_glitch(img, use_color, glitch_interval_ms);
+        } else {
+            std::string output = render_to_console(img, use_color);
+            std::cout << output;
+        }
+    }
     
-    print_ascii(pixels, width, height, channels, use_color, use_glitch, glitch_interval_ms);
     stbi_image_free(pixels);
     return 0;
 }
