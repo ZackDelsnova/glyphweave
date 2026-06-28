@@ -20,6 +20,11 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#include "gif.h"
+
 std::atomic<bool> g_exit_requested = false;
 
 void signal_handler(int signal) {
@@ -278,6 +283,52 @@ std::string render_to_console(const ProcessedImage& img, bool use_color) {
     return output;
 }
 
+// save to png
+void render_to_png(const ProcessedImage& img, const std::string& filename, bool use_color, int cell_w = 8, int cell_h = 12) {
+    int image_w = img.blocks_x * cell_w;
+    int image_h = img.blocks_y * cell_h;
+    std::vector<unsigned char> pixels(image_w * image_h * 3, 0);
+
+    auto get_cell_color = [&](const Cell& cell) -> std::tuple<unsigned char, unsigned char, unsigned char> {
+        
+    };
+
+    for (int by = 0; by < img.blocks_y; ++by) {
+        for (int bx = 0; bx < img.blocks_x; ++bx) {
+            const Cell& cell = img.cells[by * img.blocks_x + bx];
+            unsigned char fg_r, fg_g, fg_b;
+            if (use_color) {
+                fg_r = cell.r; fg_g = cell.g; fg_b = cell.b;
+            } else {
+                // BT.709 luminance
+                unsigned char gray = static_cast<unsigned char>(
+                    0.2126f * cell.r + 0.7152f * cell.g + 0.0722f * cell.b
+                );
+                fg_r = fg_g = fg_b = gray;
+            }
+            // for block based thing, just fill with fg color
+            // in advanced, u need to draw the charaqcter shape
+            int x0 = bx * cell_w;
+            int y0 = by * cell_h;
+            for (int dy = 0; dy < cell_h; ++dy) {
+                for (int dx = 0; dx < cell_w; ++dx) {
+                    int px = (y0 + dy) * image_w + (x0 + dx);
+                    // need to add 2tone fill color
+                    pixels[px * 3] = fg_r;
+                    pixels[px * 3 + 1] = fg_g;
+                    pixels[px * 3 + 2] = fg_b;
+                }
+            }
+        }
+    }
+
+    if (!stbi_write_png(filename.c_str(), image_w, image_h, 3, pixels.data(), image_w * 3)) {
+        std::cerr << "failed to make png: " << filename << '\n';
+    } else {
+        std::cout << "png saved: " << filename << '\n';
+    }
+}
+
 // row shifter glitch effect
 void apply_row_shift_glitch(std::vector<Cell>& cells, int blocks_x, int blocks_y) {
     static std::random_device rd;
@@ -300,6 +351,73 @@ void apply_row_shift_glitch(std::vector<Cell>& cells, int blocks_x, int blocks_y
             cells[row_start + x] = original_row[src_idx];
         }
     }
+}
+
+// save as gif
+void render_to_gif(const ProcessedImage& base_img, const std::string& filename,
+                   bool use_color, bool use_glitch, int interval_ms = 100,
+                   int duration_seconds = 5, int cell_w = 8, int cell_h = 12) {
+    int image_w = base_img.blocks_x * cell_w;
+    int image_h = base_img.blocks_y * cell_h;
+    // frames = duration/interval
+    int num_frames = (duration_seconds * 1000) / interval_ms;
+    num_frames = std::clamp(num_frames, 1, 200);
+
+    GifWriter writer;
+    if (!GifBegin(&writer, filename.c_str(), image_w, image_h, interval_ms)) {
+        std::cerr << "failed to gif: " << filename << '\n';
+        return;
+    }
+
+    // frame buffer - gif.h needs RGBA
+    std::vector<unsigned char> frame(image_w * image_h * 4, 0);
+
+    // frame filling helper
+    auto fill_frame = [&](const std::vector<Cell>& cells) {
+        for (int by = 0; by < base_img.blocks_y; ++by) {
+            for (int bx = 0; bx < base_img.blocks_x; ++bx) {
+                const Cell& cell = cells[by * base_img.blocks_x + bx];
+                unsigned char fg_r, fg_g, fg_b;
+                if (use_color) {
+                    fg_r = cell.r; fg_g = cell.g; fg_b = cell.b;
+                } else {
+                    // BT.709 luminance
+                    unsigned char gray = static_cast<unsigned char>(
+                        0.2126f * cell.r + 0.7152f * cell.g + 0.0722f * cell.b
+                    );
+                    fg_r = fg_g = fg_b = gray;
+                }
+                int x0 = bx * cell_w;
+                int y0 = by * cell_h;
+                for (int dy = 0; dy < cell_h; ++dy) {
+                    for (int dx = 0; dx < cell_w; ++dx) {
+                        int idx = ((y0 + dy) * image_w + (x0 + dx)) * 4;
+                        frame[idx] = fg_r;
+                        frame[idx+1] = fg_g;
+                        frame[idx+2] = fg_b;
+                        frame[idx+3] = 255; // fully opaque for alpha
+                    }
+                } 
+            }
+        }
+    };
+
+    // gen frame
+    if (use_glitch) {
+        for (int f = 0; f < num_frames; ++f) {
+            std::vector<Cell> glitched = base_img.cells;
+            apply_row_shift_glitch(glitched, base_img.blocks_x, base_img.blocks_y);
+            fill_frame(glitched);
+            GifWriteFrame(&writer, frame.data(), image_w, image_h, interval_ms);
+        }
+    } else {
+        // 1 frame alone
+        fill_frame(base_img.cells);
+        GifWriteFrame(&writer, frame.data(), image_w, image_h, interval_ms);
+    }
+
+    GifEnd(&writer);
+    std::cout << "gif saved: " << filename << '\n';
 }
 
 // output with glitch loop
@@ -329,8 +447,8 @@ void save_to_file(const std::string& content, const std::string& filename) {
     std::cout << "saved: " << filename << '\n';
 }
 
-// glyphweave <filename> -c[optional print in color] [--glitch] [--interval ms] (both optional) [-o noly does .txt file for now]
-// [--width for custom width or default terminal width]
+// glyphweave <filename> -c[optional print in color] [--glitch] [--interval ms] (both optional)
+// [-o/--output only for .txt file] [--png filename] [--gif filename] [--width for custom width or default terminal width]
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms] [-o output.txt] [--width]\n";
@@ -341,7 +459,7 @@ int main(int argc, char *argv[]) {
     bool use_color = false, use_glitch = false;
     int glitch_interval_ms = 100;
     std::string image_path;
-    std::string output_file;
+    std::string output_file, png_file, gif_file;
     
     // argument parser
     for (int i = 1; i < argc; ++i) {
@@ -362,6 +480,20 @@ int main(int argc, char *argv[]) {
                 output_file = argv[++i];
             } else {
                 std::cerr << "error: -o needs a filename\n";
+                return EXIT_FAILURE;
+            }
+        } else if (arg == "--png") {
+            if (i + 1 < argc) {
+                png_file = argv[++i];
+            } else {
+                std::cerr << "error: --png needs a filename\n";
+                return EXIT_FAILURE;
+            }
+        } else if (arg == "--gif") {
+            if (i + 1 < argc) {
+                gif_file = argv[++i];
+            } else {
+                std::cerr << "error: --gif needs a filename\n";
                 return EXIT_FAILURE;
             }
         } else if (arg == "--width") {
@@ -409,22 +541,22 @@ int main(int argc, char *argv[]) {
     ProcessedImage img = process_image(pixels, width, height, channels, use_color, width_to_use);
 
     // output decision
+    if (!png_file.empty()) {
+        render_to_png(img, png_file, use_color);
+    }
+    if (!gif_file.empty()) {
+        render_to_gif(img, gif_file, use_color, use_glitch, glitch_interval_ms);
+    }
     if (!output_file.empty()) {
-        if (use_glitch) {
-            std::cerr << "glitch mode ignored when saving to file\n";
-        }
-        std::string output = render_to_console(img, use_color);
-        save_to_file(output, output_file);
-    } else {
-        if (use_glitch) {
-            print_with_glitch(img, use_color, glitch_interval_ms);
-        } else {
-            std::string output = render_to_console(img, use_color);
-            std::cout << output;
-        }
+        std::string text = render_to_console(img, use_color);
+        save_to_file(text, output_file);
+    }
+    // no output - print to console
+    if (output_file.empty() && png_file.empty() && gif_file.empty()) {
+        if (use_glitch) print_with_glitch(img, use_color, glitch_interval_ms);
+        else std::cout << render_to_console(img, use_color);
     }
     
     stbi_image_free(pixels);
     return 0;
 }
-

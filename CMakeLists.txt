@@ -6,9 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # include part, stb_image.h is in C:\devlibs\stb
 set(STB_INCLUDE_DIR "C:/devlibs/stb")
+set(GIFH_INCLUDE_DIR "C:/devlibs/gif-h")
 
 add_executable(glyphweave 
     src/main.cpp
 )
 
-target_include_directories(glyphweave PRIVATE ${STB_INCLUDE_DIR})
+target_include_directories(glyphweave PRIVATE ${STB_INCLUDE_DIR} ${GIFH_INCLUDE_DIR})
