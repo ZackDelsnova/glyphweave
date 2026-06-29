@@ -25,6 +25,67 @@ void signal_handler(int signal) {
     }
 }
 
+// helper for parse a single token, eg "row_shift:8"
+void parse_glitch_token(const std::string& token, GlitchOptions& opts) {
+    // split by colon, optional
+    size_t colon = token.find(':');
+    std::string name = token.substr(0, colon);
+    std::string param = (colon != std::string::npos) ? token.substr(colon + 1) : "";
+
+    // helper to split param by comma and return a vec
+    auto split_params = [](std::string str) -> std::vector<std::string> {
+        std::vector<std::string> result;
+        size_t pos = 0;
+        while ((pos = str.find(',')) != std::string::npos) {
+            result.push_back(str.substr(0, pos));
+            str.erase(0, pos + 1);
+        }
+        result.push_back(str);
+        return result;
+    };
+
+    if (name == "row_shift") {
+        opts.enable_row_shift = true;
+        if (!param.empty()) opts.shift_intensity = std::stoi(param);
+    } else if (name == "dropout") {
+        opts.enable_dropout = true;
+        if (!param.empty()) opts.dropout_rate = std::stof(param);
+    } else if (name == "sine_warp") {
+        opts.enable_sine_warp = true;
+        if (!param.empty()) {
+            auto params = split_params(param);
+            opts.warp_amplitude = (params.size() > 0) ? std::stof(params[0]) : 2.0f;
+            opts.warp_frequency = (params.size() > 1) ? std::stof(params[1]) : 0.1f;
+        }
+    } else if (name == "rgb_shift") {
+        opts.enable_rgb_shift = true;
+        if (!param.empty()) opts.rgb_shift_amount = std::stoi(param);
+    } else if (name == "jpeg_smash") {
+        opts.enable_jpeg_smash = true;
+        if (!param.empty()) {
+            auto params = split_params(param);
+            opts.smash_block_size = (params.size() > 0) ? std::stoi(params[0]) : 8;
+            opts.smash_intensity = (params.size() > 1) ? std::stof(params[1]) : 0.3f;
+        }
+    } else if (name == "data_bend") {
+        opts.enable_data_bend = true;
+        if (!param.empty()) opts.data_bend_chance = std::stof(param);
+    } else if (name == "mirror_slice") {
+        opts.enable_mirror_slice = true;
+        if (!param.empty()) {
+            auto params = split_params(param);
+            opts.mirror_slice_width = (params.size() > 0) ? std::stoi(params[0]) : 10;
+            if (params.size() > 1) {
+                std::string val = params[1];
+                std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+                opts.mirror_vertical = (val == "true" || val == "1" || val == "yes");
+            }
+        }
+    } else {
+        std::cerr << "unknown glitch effect: " << name << '\n';
+    }
+}
+
 // glyphweave <filename> (static image or gif)
 // -c / --color : enable colour
 // --glitch : enable glitch effect
@@ -43,7 +104,7 @@ int main(int argc, char *argv[]) {
 
     int target_width = 0; // 0 = auto detect console width
     bool use_color = false;
-    bool use_glitch = false;
+    GlitchOptions glitch_opts;
     int glitch_interval_ms = 100;
     std::string image_path;
     std::string output_file, png_file, gif_file;
@@ -54,7 +115,21 @@ int main(int argc, char *argv[]) {
         if (arg == "-c" || arg == "--color") {
             use_color = true;
         } else if (arg == "--glitch") {
-            use_glitch = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                std::string effects = argv[++i];
+
+                // split by ','
+                size_t pos = 0;
+                while ((pos = effects.find(',')) != std::string::npos) {
+                    std::string token = effects.substr(0, pos);
+                    effects.erase(0, pos + 1);
+                    parse_glitch_token(token, glitch_opts);
+                }
+                parse_glitch_token(effects, glitch_opts); // last token
+            } else {
+                std::cerr << "error: --glitch needs a list of effects\n";
+                return EXIT_FAILURE;
+            }
         } else if (arg == "--interval") {
             if (auto parsed = parse_int(argv[++i]); parsed) {
                 glitch_interval_ms = *parsed;
@@ -129,7 +204,7 @@ int main(int argc, char *argv[]) {
             std::string text = render_to_console(frames[0], use_color);
             save_to_file(text, output_file);
         } else {
-            animate_gif_in_console(frames, delays, use_color, use_glitch);
+            animate_gif_in_console(frames, delays, use_color, glitch_opts);
         }
 
     } else {
@@ -158,8 +233,16 @@ int main(int argc, char *argv[]) {
             save_to_file(text, output_file);
         }
         if (output_file.empty() && png_file.empty() && gif_file.empty()) {
-            if (use_glitch)
-                print_with_glitch(processed, use_color, glitch_interval_ms);
+            bool any_glitch = glitch_opts.enable_row_shift ||
+                  glitch_opts.enable_dropout ||
+                  glitch_opts.enable_sine_warp ||
+                  glitch_opts.enable_jpeg_smash ||
+                  glitch_opts.enable_data_bend ||
+                  glitch_opts.enable_rgb_shift ||
+                  glitch_opts.enable_mirror_slice;
+            
+            if (any_glitch)
+                print_with_glitch(processed, use_color, glitch_interval_ms, glitch_opts);
             else
                 std::cout << render_to_console(processed, use_color);
         }

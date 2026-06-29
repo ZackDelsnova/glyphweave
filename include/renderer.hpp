@@ -1,8 +1,7 @@
 #pragma once
 
 #include "types.hpp"
-#include <vector>
-#include <string>
+#include "glitch.hpp"
 
 // renderer for various outputs
 
@@ -25,9 +24,11 @@ void save_to_file(const std::string& content, const std::string& filename);
 // console playing
 
 // display img with glitch effect, looping, need ctrl+c to exit
-void print_with_glitch(const ProcessedImage& base_img, bool use_color, int interval_ms);
+void print_with_glitch(const ProcessedImage& base_img, bool use_color,
+                        int interval_ms, const GlitchOptions& glitch_opts);
 
 // display gif animation, optional glitch effect
 void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
                             const std::vector<int>& delays,
-                            bool use_color, bool use_glitch);
+                            bool use_color,
+                            const GlitchOptions& glitch_opts);

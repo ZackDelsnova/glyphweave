@@ -165,13 +165,14 @@ void save_to_file(const std::string& content, const std::string& filename) {
 
 // console playing, static + glitch
 
-void print_with_glitch(const ProcessedImage& base_img, bool use_color, int interval_ms) {
-    std::signal(SIGINT, signal_handler);  // signal_handler is in main.cpp – extern?
+void print_with_glitch(const ProcessedImage& base_img, bool use_color, int interval_ms,
+                        const GlitchOptions& glitch_opts) {
+    std::signal(SIGINT, signal_handler);
     std::cout << "\033[?25l";  // hide cursor
 
     while (!g_exit_requested) {
         ProcessedImage temp = base_img;  // copy cells
-        apply_row_shift_glitch(temp.cells, temp.blocks_x, temp.blocks_y);
+        apply_glitch_pipeline(temp, glitch_opts);
         std::string output = render_to_console(temp, use_color);
         std::cout << "\033[2J\033[H" << output << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
@@ -184,7 +185,7 @@ void print_with_glitch(const ProcessedImage& base_img, bool use_color, int inter
 
 void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
                             const std::vector<int>& delays,
-                            bool use_color, bool use_glitch) {
+                            bool use_color, const GlitchOptions& glitch_opts) {
     std::signal(SIGINT, signal_handler);
     std::cout << "\033[?25l";
 
@@ -194,10 +195,7 @@ void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
             if (g_exit_requested) break;
 
             ProcessedImage temp = frames[i]; // copy
-            if (use_glitch) {
-                apply_row_shift_glitch(temp.cells, temp.blocks_x, temp.blocks_y);
-            }
-
+            apply_glitch_pipeline(temp, glitch_opts);
             std::string output = render_to_console(temp, use_color);
             std::cout << "\033[2J\033[H" << output << std::flush;
 
