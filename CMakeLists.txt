@@ -34,3 +34,13 @@ target_include_directories(glyphweave PRIVATE
     ${STB_INCLUDE_DIR}
     ${GIFH_INCLUDE_DIR}
 )
+
+# msvc 
+if (MSVC) 
+    target_compile_options(glyphweave PRIVATE
+        $<$<CONFIG:RELEASE>:/O2 /Ob2 /Oi /Ot /Oy /GT /GL /fp:fast>
+    )
+    target_link_options(glyphweave PRIVATE
+        $<$<CONFIG:Release>:/LTCG>
+    )
+endif()

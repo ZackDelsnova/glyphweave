@@ -6,8 +6,8 @@
 // renderer for various outputs
 
 // string with ansi code to print to console
-std::string render_to_console(const ProcessedImage& img, bool use_color);
-
+std::string render_to_console(const std::vector<Cell>& cells,
+                                int blocks_x, int blocks_y, bool use_color);
 // save as png
 void render_to_png(const ProcessedImage& img, const std::string& filename,
                    bool use_color, int cell_w = 8, int cell_h = 12);

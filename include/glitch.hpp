@@ -2,6 +2,8 @@
 
 #include "types.hpp"
 
+constexpr int DEFAULT_GLITCH_INTERVAL_MS = 100; // or 150 or 200, need to check
+
 struct GlitchOptions {
     // enable flags
     bool enable_row_shift = false;
@@ -26,5 +28,6 @@ struct GlitchOptions {
 };
 
 // main glitch effect pipeline
-void apply_glitch_pipeline(ProcessedImage& img, const GlitchOptions& opts);
+void apply_glitch_pipeline(std::vector<Cell>& cells, int blocks_x, int blocks_y,
+                           const GlitchOptions& opts);
 

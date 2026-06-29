@@ -5,13 +5,25 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+
+#ifdef _WIN32
 #define NOMINMAX
 #include <Windows.h>
+#else
+#include <unistd.h>
+#include <sys/ioctl.h>
+#endif
 
 inline int get_terminal_width() {
+#ifdef _WIN32
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
     return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+#else
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    return w.ws_col;
+#endif
 }
 
 inline bool is_gif_file(std::string& path) {
@@ -29,4 +41,17 @@ inline void restore_cursor() {
 inline std::optional<int> parse_int(const char* s) {
     try { return std::stoi(s); }
     catch (...) { return std::nullopt; }
+}
+
+// single batch console output - cross platform, didnt try in linux yet
+inline void write_console_output(const std::string& text) {
+#ifdef _WIN32
+    // windows console api - one syscall for whole frame
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD written;
+    WriteConsoleA(h, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+#else
+    // posix fallback - buffered fwrite
+    fwrite(text.data(), 1, text.size(), stdout);
+#endif
 }

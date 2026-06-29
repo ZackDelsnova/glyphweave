@@ -72,7 +72,7 @@ bool load_gif_file(const std::string& path,
         out_delays.assign(delay_ptr, delay_ptr + frame_count);
         free(delay_ptr);
     } else {
-        out_delays.assign(frame_count, 100); // default 100ms
+        out_delays.assign(frame_count, DEFAULT_GLITCH_INTERVAL_MS); // default 100ms
     }
 
     stbi_image_free(pixels);

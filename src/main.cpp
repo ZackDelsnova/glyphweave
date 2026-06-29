@@ -86,6 +86,17 @@ void parse_glitch_token(const std::string& token, GlitchOptions& opts) {
     }
 }
 
+// helper to apply glitch pipeline to processed img
+static void apply_glitch_if_enabled(ProcessedImage& img, const GlitchOptions& opts) {
+    bool any_glitch = opts.enable_row_shift || opts.enable_dropout ||
+                      opts.enable_sine_warp || opts.enable_jpeg_smash ||
+                      opts.enable_data_bend || opts.enable_rgb_shift ||
+                      opts.enable_mirror_slice;
+    if (any_glitch) {
+        apply_glitch_pipeline(img.cells, img.blocks_x, img.blocks_y, opts);
+    }
+}
+
 // glyphweave <filename> (static image or gif)
 // -c / --color : enable colour
 // --glitch : enable glitch effect
@@ -98,14 +109,14 @@ int main(int argc, char *argv[]) {
     atexit(restore_cursor);
 
     if (argc < 2) {
-        std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms] [-o output.txt] [--width]\n";
+        std::cerr << "usage: " << argv[0] << " <filename> [-c] [--glitch] [--interval ms] [-o output.txt] [--png] [--gif] [--width]\n";
         return EXIT_FAILURE;
     }
 
     int target_width = 0; // 0 = auto detect console width
     bool use_color = false;
     GlitchOptions glitch_opts;
-    int glitch_interval_ms = 100;
+    int glitch_interval_ms = DEFAULT_GLITCH_INTERVAL_MS;
     std::string image_path;
     std::string output_file, png_file, gif_file;
     
@@ -170,7 +181,8 @@ int main(int argc, char *argv[]) {
     }
 
     if (is_gif_file(image_path)) {
-        // gif input    
+        // gif input
+
         std::vector<Image> raw_frames;
         std::vector<int> delays;
         if (!load_gif_file(image_path, raw_frames, delays)) {
@@ -193,17 +205,38 @@ int main(int argc, char *argv[]) {
                                            use_color, width_to_use));
         }
 
-        // output decision
+        // save as gif
         if (!gif_file.empty()) {
-            render_to_gif(frames, delays, gif_file, use_color);
-        } else if (!png_file.empty()) {
-            std::cerr << "warning gif input, png output - saving only first frame.\n";
-            render_to_png(frames[0], png_file, use_color);
-        } else if (!output_file.empty()) {
-            std::cerr << "warning gif input, text output - saving only first frame.\n";
-            std::string text = render_to_console(frames[0], use_color);
+            // if glitch enabled, apply it per frame
+            std::vector<ProcessedImage> glitched_frames;
+            glitched_frames.reserve(frames.size());
+            for (const auto& frame : frames) {
+                ProcessedImage copy = frame;
+                apply_glitch_if_enabled(copy, glitch_opts);
+                glitched_frames.push_back(std::move(copy));
+            }
+            render_to_gif(glitched_frames, delays, gif_file, use_color);
+        }
+
+        // save as png, 1st frame alone
+        if (!png_file.empty()) {
+            std::cerr << "warning: gif input, png output - saving only first frame.\n";
+            ProcessedImage first = frames[0];
+            apply_glitch_if_enabled(first, glitch_opts);
+            render_to_png(first, png_file, use_color);
+        }
+
+        // save as txt, 1st frame alone
+        if (!output_file.empty()) {
+            std::cerr << "warning: gif input, text output - saving only first frame.\n";
+            ProcessedImage first = frames[0];
+            apply_glitch_if_enabled(first, glitch_opts);
+            std::string text = render_to_console(first.cells, first.blocks_x, first.blocks_y, use_color);
             save_to_file(text, output_file);
-        } else {
+        }
+
+        // no output, run in console
+        if (output_file.empty() && png_file.empty() && gif_file.empty()) {
             animate_gif_in_console(frames, delays, use_color, glitch_opts);
         }
 
@@ -220,31 +253,53 @@ int main(int argc, char *argv[]) {
         width_to_use = std::max(80, width_to_use);
 
         ProcessedImage processed = process_image(img.data.data(), img.w, img.h, img.c,
-                                                 use_color, width_to_use);
+                                                    use_color, width_to_use);
 
-        if (!png_file.empty()) render_to_png(processed, png_file, use_color);
-        if (!gif_file.empty()) {
-            std::vector<ProcessedImage> single = {processed};
-            std::vector<int> single_delay = {100};
-            render_to_gif(single, single_delay, gif_file, use_color);
+        // save as png
+        if (!png_file.empty()) {
+            ProcessedImage copy = processed;
+            apply_glitch_if_enabled(copy, glitch_opts);
+            render_to_png(copy, png_file, use_color);
         }
+
+        // save as txt
         if (!output_file.empty()) {
-            std::string text = render_to_console(processed, use_color);
+            ProcessedImage copy = processed;
+            apply_glitch_if_enabled(copy, glitch_opts);
+            std::string text = render_to_console(copy.cells, copy.blocks_x, copy.blocks_y, use_color);
             save_to_file(text, output_file);
         }
+
+        // save as gif, single frame anim
+        if (!gif_file.empty()) {
+            const int NUM_FRAMES = 30;
+            std::vector<ProcessedImage> glitch_frames;
+            glitch_frames.reserve(NUM_FRAMES);
+            std::vector<int> frame_delays(NUM_FRAMES, DEFAULT_GLITCH_INTERVAL_MS);
+
+            for (int i = 0; i < NUM_FRAMES; ++i) {
+                ProcessedImage copy = processed;
+                apply_glitch_if_enabled(copy, glitch_opts);
+                glitch_frames.push_back(std::move(copy));
+            }
+
+            render_to_gif(glitch_frames, frame_delays, gif_file, use_color);
+        }
+
+        // no output, run in console
         if (output_file.empty() && png_file.empty() && gif_file.empty()) {
-            bool any_glitch = glitch_opts.enable_row_shift ||
-                  glitch_opts.enable_dropout ||
-                  glitch_opts.enable_sine_warp ||
-                  glitch_opts.enable_jpeg_smash ||
-                  glitch_opts.enable_data_bend ||
-                  glitch_opts.enable_rgb_shift ||
-                  glitch_opts.enable_mirror_slice;
-            
-            if (any_glitch)
+            bool any_glitch = glitch_opts.enable_row_shift || glitch_opts.enable_dropout ||
+                              glitch_opts.enable_sine_warp || glitch_opts.enable_jpeg_smash ||
+                              glitch_opts.enable_data_bend || glitch_opts.enable_rgb_shift ||
+                              glitch_opts.enable_mirror_slice;
+
+            if (any_glitch) {
                 print_with_glitch(processed, use_color, glitch_interval_ms, glitch_opts);
-            else
-                std::cout << render_to_console(processed, use_color);
+            } else {
+                // nothign just print clean img once
+                std::string text = render_to_console(processed.cells, processed.blocks_x, processed.blocks_y, use_color);
+                std::cout << text;
+            }
         }
     }
     return 0;

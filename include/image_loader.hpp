@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "glitch.hpp"
 #include <vector>
 #include <string>
 

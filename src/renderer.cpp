@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 #include "glitch.hpp"
+#include "utils.hpp"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -8,6 +9,9 @@
 #include <thread>
 #include <csignal>
 #include <atomic>
+#include <charconv>
+#include <array>
+#include <cstring>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -18,34 +22,72 @@
 extern std::atomic<bool> g_exit_requested;
 extern void signal_handler(int);
 
+// helper for converstion, int to string
+template <typename T>
+static void append_int(std::string& out, T val) {
+    std::array<char, 32> buf;
+    auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), val);
+    out.append(buf.data(), ptr - buf.data());
+}
+
+
 // console renderer
 
-std::string render_to_console(const ProcessedImage& img, bool use_color) {
-    std::string output;
-    output.reserve(img.blocks_x * img.blocks_y * 30);
+std::string render_to_console(const std::vector<Cell>& cells,
+                            int blocks_x, int blocks_y, bool use_color) {
+    
+    // persistent buffer, grows to max size once
+    static std::string output;
+    static int last_blocks_x = -1;
+    static int last_blocks_y = -1;
 
-    for (int by = 0; by < img.blocks_y; ++by) {
-        for (int bx = 0; bx < img.blocks_x; ++bx) {
-            const Cell& cell = img.cells[by * img.blocks_x + bx];
-            if (use_color) {
+    // reserve enough space if dim changes
+    if (blocks_x != last_blocks_x || blocks_y != last_blocks_y) {
+        last_blocks_x = blocks_x;
+        last_blocks_y = blocks_y;
+        output.reserve(blocks_x * blocks_y * 60); //rough estimate around ~50 for ansi
+    }
+
+    output.clear();
+
+    if (use_color) {
+        for (int y = 0; y < blocks_y; ++y) {
+            for (int x = 0; x < blocks_x; ++x) {
+                const Cell& cell = cells[y * blocks_x + x];
+
+                // fg
                 output.append("\033[38;2;");
-                output.append(std::to_string(cell.r)).push_back(';');
-                output.append(std::to_string(cell.g)).push_back(';');
-                output.append(std::to_string(cell.b)).push_back('m');
+                append_int(output, cell.r);
+                output.push_back(';');
+                append_int(output, cell.g);
+                output.push_back(';');
+                append_int(output, cell.b);
+                output.push_back('m');
 
+                // bg
                 output.append("\033[48;2;");
-                output.append(std::to_string(cell.br)).push_back(';');
-                output.append(std::to_string(cell.bg)).push_back(';');
-                output.append(std::to_string(cell.bb)).push_back('m');
+                append_int(output, cell.br);
+                output.push_back(';');
+                append_int(output, cell.bg);
+                output.push_back(';');
+                append_int(output, cell.bb);
+                output.push_back('m');
 
                 output.push_back(cell.ch);
                 output.append("\033[0m");
-            } else {
-                output.push_back(cell.ch);
             }
+            output.push_back('\n');
         }
-        output.push_back('\n');
+    } else {
+        // monochrome
+        for (int y = 0; y < blocks_y; ++y) {
+            for (int x = 0; x < blocks_x; ++x) {
+                output.push_back(cells[y * blocks_x + x].ch);
+            }
+            output.push_back('\n');
+        }
     }
+
     return output;
 }
 
@@ -132,7 +174,7 @@ void render_to_gif(const std::vector<ProcessedImage>& frames,
                 for (int dy = 0; dy < cell_h; ++dy) {
                     for (int dx = 0; dx < cell_w; ++dx) {
                         int idx = ((y0 + dy) * image_w + (x0 + dx)) * 4;
-                        frame_rgba[idx]     = r;
+                        frame_rgba[idx] = r;
                         frame_rgba[idx + 1] = g;
                         frame_rgba[idx + 2] = b;
                         frame_rgba[idx + 3] = 255;
@@ -147,7 +189,7 @@ void render_to_gif(const std::vector<ProcessedImage>& frames,
     }
 
     GifEnd(&writer);
-    std::cout << "GIF saved: " << filename << '\n';
+    std::cout << "gif saved: " << filename << '\n';
 }
 
 // txt file saver
@@ -170,11 +212,23 @@ void print_with_glitch(const ProcessedImage& base_img, bool use_color, int inter
     std::signal(SIGINT, signal_handler);
     std::cout << "\033[?25l";  // hide cursor
 
+    // allocate working buffer
+    std::vector<Cell> working_cells(base_img.cells.size());
+    const std::vector<Cell>& base_cells = base_img.cells;
+
     while (!g_exit_requested) {
-        ProcessedImage temp = base_img;  // copy cells
-        apply_glitch_pipeline(temp, glitch_opts);
-        std::string output = render_to_console(temp, use_color);
-        std::cout << "\033[2J\033[H" << output << std::flush;
+        // fast raw copy
+        std::memcpy(working_cells.data(), base_cells.data(), base_cells.size() * sizeof(Cell));
+
+        apply_glitch_pipeline(working_cells, base_img.blocks_x, base_img.blocks_y, glitch_opts);
+
+        std::string full_output;
+        full_output.reserve(4096);
+        full_output.append("\033[2J\033[H");
+        full_output.append(render_to_console(working_cells, base_img.blocks_x, base_img.blocks_y, use_color));
+
+        write_console_output(full_output);
+
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
 
@@ -189,17 +243,29 @@ void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
     std::signal(SIGINT, signal_handler);
     std::cout << "\033[?25l";
 
+    // pre allocate buffer, use first frames size
+    if (frames.empty()) return;
+    std::vector<Cell> working_cells(frames[0].cells.size());
+
     size_t frame_count = frames.size();
     while (!g_exit_requested) {
         for (size_t i = 0; i < frame_count; ++i) {
             if (g_exit_requested) break;
 
-            ProcessedImage temp = frames[i]; // copy
-            apply_glitch_pipeline(temp, glitch_opts);
-            std::string output = render_to_console(temp, use_color);
-            std::cout << "\033[2J\033[H" << output << std::flush;
+            const auto& frame = frames[i];
+            // copy frame into working buffer
+            std::memcpy(working_cells.data(), frame.cells.data(), frame.cells.size() * sizeof(Cell));
 
-            int delay_ms = (i < delays.size() && delays[i] > 0) ? delays[i] : 100;
+            apply_glitch_pipeline(working_cells, frame.blocks_x, frame.blocks_y, glitch_opts);
+
+            std::string full_output;
+            full_output.reserve(8192);
+            full_output.append("\033[2J\033[H");
+            full_output.append(render_to_console(working_cells, frame.blocks_x, frame.blocks_y, use_color));
+
+            write_console_output(full_output);
+
+            int delay_ms = (i < delays.size() && delays[i] > 0) ? delays[i] : DEFAULT_GLITCH_INTERVAL_MS;
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         }
     }
