@@ -29,5 +29,6 @@ struct ProcessingOptions {
     float gamma = 1.0f;
     bool normalize = true;
     bool use_color = false;
+    bool fast_dither = false; // true - bayer matrix, false - floyd-steinberg 
     std::string block_chars = " ▁▂▃▄▅▆▇█";
 };

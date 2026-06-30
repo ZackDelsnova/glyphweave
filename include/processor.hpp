@@ -5,8 +5,8 @@
 #include <string>
 
 ProcessedImage process_image(const unsigned char* pixels, int w, int h, int channels,
-                             bool use_color, int target_width);
+                                const ProcessingOptions& opts);
 
 ProcessedImage process_frame(const unsigned char* frame_pixels, int width, int height,
-                             int channels, bool use_color, int target_width);
+                             int channels, const ProcessingOptions& opts);
 
