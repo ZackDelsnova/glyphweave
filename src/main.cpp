@@ -15,6 +15,7 @@
 #include "processor.hpp"
 #include "glitch.hpp"
 #include "renderer.hpp"
+#include "refine.hpp"
 
 // global exit flag
 std::atomic<bool> g_exit_requested = false;
@@ -123,6 +124,9 @@ int main(int argc, char *argv[]) {
     int glitch_interval_ms = DEFAULT_GLITCH_INTERVAL_MS;
     std::string image_path;
     std::string output_file, png_file, gif_file;
+
+    RefineOptions refine_opts;
+    refine_opts.enabled = false;
     
     // argument parser
     for (int i = 1; i < argc; ++i) {
@@ -170,6 +174,29 @@ int main(int argc, char *argv[]) {
                 std::cerr << "error: --width needs a number\n";
                 return EXIT_FAILURE;
             }
+        } else if (arg == "--refine") {
+            refine_opts.enabled = true;
+        } else if (arg == "--refine-iter") {
+            if (auto parsed = parse_int(argv[++i]); parsed) {
+                refine_opts.max_iterations = *parsed;
+            } else { 
+                std::cerr << "error: --refine-iter needs a number\n";
+                return EXIT_FAILURE; 
+            }
+        } else if (arg == "--refine-width") {
+            if (auto parsed = parse_int(argv[++i]); parsed) {
+                refine_opts.width_override = *parsed;
+            } else {
+                std::cerr << "error: --refine-width needs a number\n";
+                return EXIT_FAILURE; 
+            }
+        } else if (arg == "--diversity") {
+            if (auto parsed = parse_float(argv[++i]); parsed) {
+                refine_opts.diversity_weight = *parsed;
+            } else { 
+                std::cerr << "error: --diversity needs a number\n";
+                return EXIT_FAILURE; 
+            }
         } else if (arg[0] == '-') {
             std::cerr << "unknown option: " << arg << '\n';
             return EXIT_FAILURE;
@@ -212,6 +239,14 @@ int main(int argc, char *argv[]) {
             proc_opts.target_width = width_to_use;
             frames.push_back(process_image(raw.data.data(), raw.w, raw.h, raw.c,
                                            proc_opts));
+        }
+
+        // refine frames if enabled and has output
+        if (refine_opts.enabled && has_output) {
+            std::cout << "refining all frames...........\n";
+            for (auto& frame : frames) {
+                refine_image(frame, refine_opts, frame.grayscale_data);
+            }
         }
 
         // save as gif
@@ -267,6 +302,16 @@ int main(int argc, char *argv[]) {
 
         proc_opts.target_width = width_to_use;
         ProcessedImage processed = process_image(img.data.data(), img.w, img.h, img.c, proc_opts);
+
+        if (refine_opts.enabled && has_output) {
+            std::cout << "refining image.........\n";
+            refine_image(processed, refine_opts, processed.grayscale_data);
+
+            std::cout << "First 20 chars after refinement: ";
+            for (int i = 0; i < 20 && i < processed.cells.size(); ++i)
+                std::cout << processed.cells[i].ch;
+            std::cout << "\n";
+        }
 
         // save as png
         if (!png_file.empty()) {

@@ -24,6 +24,7 @@ struct ProcessedImage {
     int blocks_y;
     int target_width;
     int target_height;
+    std::vector<float> grayscale_data;
 };
 
 struct ProcessingOptions {

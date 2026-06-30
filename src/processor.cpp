@@ -278,5 +278,6 @@ ProcessedImage process_image(const unsigned char* pixels, int w, int h, int chan
     result.blocks_y = (TARGET_HEIGHT + opts.block_h - 1) / opts.block_h;
     result.target_width = opts.target_width;
     result.target_height = TARGET_HEIGHT;
+    result.grayscale_data = std::move(grays);
     return result;
 }

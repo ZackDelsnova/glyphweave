@@ -43,6 +43,11 @@ inline std::optional<int> parse_int(const char* s) {
     catch (...) { return std::nullopt; }
 }
 
+inline std::optional<float> parse_float(const char* s) {
+    try { return std::stof(s); }
+    catch (...) { return std::nullopt; }
+}
+
 // single batch console output - cross platform, didnt try in linux yet
 inline void write_console_output(const std::string& text) {
 #ifdef _WIN32
