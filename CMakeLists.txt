@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # external libs
 set(STB_INCLUDE_DIR "C:/devlibs/stb")
 set(GIFH_INCLUDE_DIR "C:/devlibs/gif-h")
-set(EIGEN_INCLUDE_DIR "C:/devlibs/eigen")
+# set(EIGEN_INCLUDE_DIR "C:/devlibs/eigen")
 
 set(PROJECT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
@@ -36,7 +36,7 @@ target_include_directories(glyphweave PRIVATE
     ${PROJECT_INCLUDE_DIR}
     ${STB_INCLUDE_DIR}
     ${GIFH_INCLUDE_DIR}
-    ${EIGEN_INCLUDE_DIR}
+    # ${EIGEN_INCLUDE_DIR}
 )
 
 # msvc 

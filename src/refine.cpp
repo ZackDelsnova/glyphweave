@@ -1,12 +1,14 @@
 #include "refine.hpp"
 #include <iostream>
+
+// org refinement code, but does nothing now
+#if 0
 #define _USE_MATH_DEFINES
 #include <cmath>
 #include <algorithm>
 #include <unsupported/Eigen/CXX11/Tensor>
 
 namespace {
-
 
     // char atlas
     // for chars ' '▁▂▃▄▅▆▇█
@@ -304,4 +306,18 @@ bool refine_image(ProcessedImage& img, const RefineOptions& opts,
 
     std::cout << "refinement done, final loss: " << best_loss << '\n';
     return true;
+}
+
+#endif
+
+// warns once, does nothing
+bool refine_image(ProcessedImage& /*img*/, const RefineOptions& /*opts*/,
+                  const std::vector<float>& /*target_grays*/) {
+    static bool warned = false;
+    if (!warned) {
+        std::cerr << "warning: --refine is deprecated and has no effect\n"
+                  << "Floyd-Steinberg dithering produces better results\n";
+        warned = true;
+    }
+    return false;
 }

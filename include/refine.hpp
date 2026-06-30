@@ -15,6 +15,9 @@ struct RefineOptions {
     float warmup_ratio = 0.1f; // 10% of iterations for warmup
 };
 
+// DEPRECATED: does nothin, only prints a warning
+// The Floyd‑Steinberg dithering is superior, so refinement is disabled
+
 // refine char selection in img, using gradient descent
 // target_grays must be vec of length blocks_x * blocks_y
 // contains target grayscale val 0 to 255 for each cell

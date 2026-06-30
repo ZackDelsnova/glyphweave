@@ -8,6 +8,7 @@
 #include <optional>
 #include <cstdlib>
 #include <algorithm>
+#include <random>
 
 #include "types.hpp"
 #include "utils.hpp"
@@ -15,7 +16,7 @@
 #include "processor.hpp"
 #include "glitch.hpp"
 #include "renderer.hpp"
-#include "refine.hpp"
+// #include "refine.hpp"
 
 // global exit flag
 std::atomic<bool> g_exit_requested = false;
@@ -24,6 +25,34 @@ void signal_handler(int signal) {
     if (signal == SIGINT) {
         g_exit_requested = true;
     }
+}
+
+static GlitchOptions resolve_glitch_opts(const GlitchOptions& base_opts) {
+    GlitchOptions opts = base_opts;
+    if (opts.enable_random) {
+        opts.enable_row_shift = false;
+        opts.enable_dropout = false;
+        opts.enable_sine_warp = false;
+        opts.enable_jpeg_smash = false;
+        opts.enable_data_bend = false;
+        opts.enable_rgb_shift = false;
+        opts.enable_mirror_slice = false;
+
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        static std::uniform_int_distribution<int> dist(0, 6);
+        int choice = dist(gen);
+        switch (choice) {
+            case 0: opts.enable_row_shift = true; break;
+            case 1: opts.enable_dropout = true; break;
+            case 2: opts.enable_sine_warp = true; break;
+            case 3: opts.enable_jpeg_smash = true; break;
+            case 4: opts.enable_data_bend = true; break;
+            case 5: opts.enable_rgb_shift = true; break;
+            case 6: opts.enable_mirror_slice = true; break;
+        }
+    }
+    return opts;
 }
 
 // helper for parse a single token, eg "row_shift:8"
@@ -87,17 +116,6 @@ void parse_glitch_token(const std::string& token, GlitchOptions& opts) {
     }
 }
 
-// helper to apply glitch pipeline to processed img
-static void apply_glitch_if_enabled(ProcessedImage& img, const GlitchOptions& opts) {
-    bool any_glitch = opts.enable_row_shift || opts.enable_dropout ||
-                      opts.enable_sine_warp || opts.enable_jpeg_smash ||
-                      opts.enable_data_bend || opts.enable_rgb_shift ||
-                      opts.enable_mirror_slice;
-    if (any_glitch) {
-        apply_glitch_pipeline(img.cells, img.blocks_x, img.blocks_y, opts);
-    }
-}
-
 // glyphweave <filename> (static image or gif)
 // -c / --color : enable colour
 // --glitch : enable glitch effect
@@ -125,8 +143,8 @@ int main(int argc, char *argv[]) {
     std::string image_path;
     std::string output_file, png_file, gif_file;
 
-    RefineOptions refine_opts;
-    refine_opts.enabled = false;
+    // RefineOptions refine_opts;
+    // refine_opts.enabled = false;
     
     // argument parser
     for (int i = 1; i < argc; ++i) {
@@ -138,15 +156,22 @@ int main(int argc, char *argv[]) {
         } else if (arg == "--glitch") {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 std::string effects = argv[++i];
-
-                // split by ','
-                size_t pos = 0;
-                while ((pos = effects.find(',')) != std::string::npos) {
-                    std::string token = effects.substr(0, pos);
-                    effects.erase(0, pos + 1);
-                    parse_glitch_token(token, glitch_opts);
+                if (effects == "all") {
+                    glitch_opts.enable_random = true;
+                    // Change interval to 500ms if still default
+                    if (glitch_interval_ms == DEFAULT_GLITCH_INTERVAL_MS) {
+                        glitch_interval_ms = 500;
+                    }
+                } else {
+                    // split by ','
+                    size_t pos = 0;
+                    while ((pos = effects.find(',')) != std::string::npos) {
+                        std::string token = effects.substr(0, pos);
+                        effects.erase(0, pos + 1);
+                        parse_glitch_token(token, glitch_opts);
+                    }
+                    parse_glitch_token(effects, glitch_opts); // last token
                 }
-                parse_glitch_token(effects, glitch_opts); // last token
             } else {
                 std::cerr << "error: --glitch needs a list of effects\n";
                 return EXIT_FAILURE;
@@ -175,28 +200,11 @@ int main(int argc, char *argv[]) {
                 return EXIT_FAILURE;
             }
         } else if (arg == "--refine") {
-            refine_opts.enabled = true;
-        } else if (arg == "--refine-iter") {
-            if (auto parsed = parse_int(argv[++i]); parsed) {
-                refine_opts.max_iterations = *parsed;
-            } else { 
-                std::cerr << "error: --refine-iter needs a number\n";
-                return EXIT_FAILURE; 
-            }
-        } else if (arg == "--refine-width") {
-            if (auto parsed = parse_int(argv[++i]); parsed) {
-                refine_opts.width_override = *parsed;
-            } else {
-                std::cerr << "error: --refine-width needs a number\n";
-                return EXIT_FAILURE; 
-            }
-        } else if (arg == "--diversity") {
-            if (auto parsed = parse_float(argv[++i]); parsed) {
-                refine_opts.diversity_weight = *parsed;
-            } else { 
-                std::cerr << "error: --diversity needs a number\n";
-                return EXIT_FAILURE; 
-            }
+            std::cerr << "warning: --refine is deprecated and ignored\n";
+            // refine_opts.enabled = true;
+        } else if (arg == "--refine-iter" || arg == "--refine-width" || arg == "--diversity") {
+            std::cerr << "warning: " << arg << " is deprecated and ignored.\n";
+            if (i + 1 < argc) ++i;
         } else if (arg[0] == '-') {
             std::cerr << "unknown option: " << arg << '\n';
             return EXIT_FAILURE;
@@ -241,13 +249,14 @@ int main(int argc, char *argv[]) {
                                            proc_opts));
         }
 
-        // refine frames if enabled and has output
+        /* refine frames if enabled and has output
         if (refine_opts.enabled && has_output) {
             std::cout << "refining all frames...........\n";
             for (auto& frame : frames) {
                 refine_image(frame, refine_opts, frame.grayscale_data);
             }
         }
+        */
 
         // save as gif
         if (!gif_file.empty()) {
@@ -256,7 +265,8 @@ int main(int argc, char *argv[]) {
             glitched_frames.reserve(frames.size());
             for (const auto& frame : frames) {
                 ProcessedImage copy = frame;
-                apply_glitch_if_enabled(copy, glitch_opts);
+                GlitchOptions resolved = resolve_glitch_opts(glitch_opts);
+                apply_glitch_pipeline(copy.cells, copy.blocks_x, copy.blocks_y, resolved);
                 glitched_frames.push_back(std::move(copy));
             }
             render_to_gif(glitched_frames, delays, gif_file, proc_opts.use_color);
@@ -266,7 +276,8 @@ int main(int argc, char *argv[]) {
         if (!png_file.empty()) {
             std::cerr << "warning: gif input, png output - saving only first frame.\n";
             ProcessedImage first = frames[0];
-            apply_glitch_if_enabled(first, glitch_opts);
+            GlitchOptions resolved = resolve_glitch_opts(glitch_opts);
+            apply_glitch_pipeline(first.cells, first.blocks_x, first.blocks_y, resolved);           
             render_to_png(first, png_file, proc_opts.use_color);
         }
 
@@ -274,7 +285,8 @@ int main(int argc, char *argv[]) {
         if (!output_file.empty()) {
             std::cerr << "warning: gif input, text output - saving only first frame.\n";
             ProcessedImage first = frames[0];
-            apply_glitch_if_enabled(first, glitch_opts);
+            GlitchOptions resolved = resolve_glitch_opts(glitch_opts);
+            apply_glitch_pipeline(first.cells, first.blocks_x, first.blocks_y, resolved);
             std::string text;
             text.reserve(4096);
             render_to_console(first.cells, first.blocks_x, first.blocks_y, proc_opts.use_color, text);
@@ -303,6 +315,7 @@ int main(int argc, char *argv[]) {
         proc_opts.target_width = width_to_use;
         ProcessedImage processed = process_image(img.data.data(), img.w, img.h, img.c, proc_opts);
 
+        /*
         if (refine_opts.enabled && has_output) {
             std::cout << "refining image.........\n";
             refine_image(processed, refine_opts, processed.grayscale_data);
@@ -312,18 +325,21 @@ int main(int argc, char *argv[]) {
                 std::cout << processed.cells[i].ch;
             std::cout << "\n";
         }
+        */
 
         // save as png
         if (!png_file.empty()) {
             ProcessedImage copy = processed;
-            apply_glitch_if_enabled(copy, glitch_opts);
+            GlitchOptions resolved = resolve_glitch_opts(glitch_opts);
+            apply_glitch_pipeline(copy.cells, copy.blocks_x, copy.blocks_y, resolved);
             render_to_png(copy, png_file, proc_opts.use_color);
         }
 
         // save as txt
         if (!output_file.empty()) {
             ProcessedImage copy = processed;
-            apply_glitch_if_enabled(copy, glitch_opts);
+            GlitchOptions resolved = resolve_glitch_opts(glitch_opts);
+            apply_glitch_pipeline(copy.cells, copy.blocks_x, copy.blocks_y, resolved);
             std::string text;
             text.reserve(4096);
             render_to_console(copy.cells, copy.blocks_x, copy.blocks_y, proc_opts.use_color, text);
@@ -339,7 +355,8 @@ int main(int argc, char *argv[]) {
 
             for (int i = 0; i < NUM_FRAMES; ++i) {
                 ProcessedImage copy = processed;
-                apply_glitch_if_enabled(copy, glitch_opts);
+                GlitchOptions resolved = resolve_glitch_opts(glitch_opts);
+                apply_glitch_pipeline(copy.cells, copy.blocks_x, copy.blocks_y, resolved);
                 glitch_frames.push_back(std::move(copy));
             }
 
@@ -351,7 +368,7 @@ int main(int argc, char *argv[]) {
             bool any_glitch = glitch_opts.enable_row_shift || glitch_opts.enable_dropout ||
                               glitch_opts.enable_sine_warp || glitch_opts.enable_jpeg_smash ||
                               glitch_opts.enable_data_bend || glitch_opts.enable_rgb_shift ||
-                              glitch_opts.enable_mirror_slice;
+                              glitch_opts.enable_mirror_slice || glitch_opts.enable_random;
 
             if (any_glitch) {
                 print_with_glitch(processed, proc_opts.use_color, glitch_interval_ms, glitch_opts);

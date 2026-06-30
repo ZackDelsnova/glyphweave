@@ -25,6 +25,8 @@ struct GlitchOptions {
     int rgb_shift_amount = 2;
     int mirror_slice_width = 10;
     bool mirror_vertical = true;
+
+    bool enable_random = false; // secret, picks one randomly each frame
 };
 
 // main glitch effect pipeline

@@ -12,6 +12,7 @@
 #include <charconv>
 #include <array>
 #include <cstring>
+#include <random>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -208,7 +209,33 @@ void print_with_glitch(const ProcessedImage& base_img, bool use_color, int inter
         // fast raw copy
         std::memcpy(working_cells.data(), base_cells.data(), base_cells.size() * sizeof(Cell));
 
-        apply_glitch_pipeline(working_cells, base_img.blocks_x, base_img.blocks_y, glitch_opts);
+        GlitchOptions opts = glitch_opts;
+        if (opts.enable_random) {
+            // reset everything
+            opts.enable_row_shift = false;
+            opts.enable_dropout = false;
+            opts.enable_sine_warp = false;
+            opts.enable_jpeg_smash = false;
+            opts.enable_data_bend = false;
+            opts.enable_rgb_shift = false;
+            opts.enable_mirror_slice = false;
+
+            static std::random_device rd;
+            static std::mt19937 gen(rd());
+            static std::uniform_int_distribution<int> dist(0, 6);
+            int choice = dist(gen);
+            switch (choice) {
+                case 0: opts.enable_row_shift = true; break;
+                case 1: opts.enable_dropout = true; break;
+                case 2: opts.enable_sine_warp = true; break;
+                case 3: opts.enable_jpeg_smash = true; break;
+                case 4: opts.enable_data_bend = true; break;
+                case 5: opts.enable_rgb_shift = true; break;
+                case 6: opts.enable_mirror_slice = true; break;
+            }
+        }
+
+        apply_glitch_pipeline(working_cells, base_img.blocks_x, base_img.blocks_y, opts);
 
         full_output.clear();
         full_output.append("\033[2J\033[H");
@@ -246,7 +273,32 @@ void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
             // copy frame into working buffer
             std::memcpy(working_cells.data(), frame.cells.data(), frame.cells.size() * sizeof(Cell));
 
-            apply_glitch_pipeline(working_cells, frame.blocks_x, frame.blocks_y, glitch_opts);
+            GlitchOptions opts = glitch_opts;
+            if (opts.enable_random) {
+                // reset everything
+                opts.enable_row_shift = false;
+                opts.enable_dropout = false;
+                opts.enable_sine_warp = false;
+                opts.enable_jpeg_smash = false;
+                opts.enable_data_bend = false;
+                opts.enable_rgb_shift = false;
+                opts.enable_mirror_slice = false;
+
+                static std::random_device rd;
+                static std::mt19937 gen(rd());
+                static std::uniform_int_distribution<int> dist(0, 6);
+                int choice = dist(gen);
+                switch (choice) {
+                    case 0: opts.enable_row_shift = true; break;
+                    case 1: opts.enable_dropout = true; break;
+                    case 2: opts.enable_sine_warp = true; break;
+                    case 3: opts.enable_jpeg_smash = true; break;
+                    case 4: opts.enable_data_bend = true; break;
+                    case 5: opts.enable_rgb_shift = true; break;
+                    case 6: opts.enable_mirror_slice = true; break;
+                }
+            }
+            apply_glitch_pipeline(working_cells, frame.blocks_x, frame.blocks_y, opts);
 
             full_output.clear();
             full_output.append("\033[2J\033[H");
