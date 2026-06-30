@@ -48,8 +48,15 @@ inline void write_console_output(const std::string& text) {
 #ifdef _WIN32
     // windows console api - one syscall for whole frame
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD written;
-    WriteConsoleA(h, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+    DWORD mode;
+    // chk if its console
+    if (GetConsoleMode(h, &mode)) {
+        DWORD written;
+        WriteConsoleA(h, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+    } else {
+        DWORD written;
+        WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+    }
 #else
     // posix fallback - buffered fwrite
     fwrite(text.data(), 1, text.size(), stdout);

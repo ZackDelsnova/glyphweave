@@ -199,12 +199,14 @@ int main(int argc, char *argv[]) {
         std::vector<ProcessedImage> frames;
         frames.reserve(raw_frames.size());
 
+        bool has_output = !output_file.empty() || !png_file.empty() || !gif_file.empty();
         for (const auto& raw : raw_frames) {
             int width_to_use;
-            if (!output_file.empty() || !png_file.empty() || !gif_file.empty())
-                width_to_use = (proc_opts.target_width > 0) ? proc_opts.target_width : 600;
-            else
-                width_to_use = (proc_opts.target_width > 0) ? proc_opts.target_width : get_terminal_width() - 2;
+            if (proc_opts.target_width > 0) {
+                width_to_use = proc_opts.target_width;
+            } else {
+                width_to_use = has_output ? 600 : get_terminal_width() - 2;
+            }
             width_to_use = std::max(80, width_to_use);
 
             proc_opts.target_width = width_to_use;
@@ -238,7 +240,9 @@ int main(int argc, char *argv[]) {
             std::cerr << "warning: gif input, text output - saving only first frame.\n";
             ProcessedImage first = frames[0];
             apply_glitch_if_enabled(first, glitch_opts);
-            std::string text = render_to_console(first.cells, first.blocks_x, first.blocks_y, proc_opts.use_color);
+            std::string text;
+            text.reserve(4096);
+            render_to_console(first.cells, first.blocks_x, first.blocks_y, proc_opts.use_color, text);
             save_to_file(text, output_file);
         }
 
@@ -252,11 +256,13 @@ int main(int argc, char *argv[]) {
         Image img = load_image_file(image_path);
         if (img.w == 0) return EXIT_FAILURE;
 
+        bool has_output = !output_file.empty() || !png_file.empty() || !gif_file.empty();
         int width_to_use;
-        if (!output_file.empty())
-            width_to_use = (proc_opts.target_width > 0) ? proc_opts.target_width : 600;
-        else
-            width_to_use = (proc_opts.target_width > 0) ? proc_opts.target_width : get_terminal_width() - 2;
+        if (proc_opts.target_width > 0) {
+            width_to_use = proc_opts.target_width;
+        } else {
+            width_to_use = has_output ? 600 : get_terminal_width() - 2;
+        }
         width_to_use = std::max(80, width_to_use);
 
         proc_opts.target_width = width_to_use;
@@ -273,7 +279,9 @@ int main(int argc, char *argv[]) {
         if (!output_file.empty()) {
             ProcessedImage copy = processed;
             apply_glitch_if_enabled(copy, glitch_opts);
-            std::string text = render_to_console(copy.cells, copy.blocks_x, copy.blocks_y, proc_opts.use_color);
+            std::string text;
+            text.reserve(4096);
+            render_to_console(copy.cells, copy.blocks_x, copy.blocks_y, proc_opts.use_color, text);
             save_to_file(text, output_file);
         }
 
@@ -304,7 +312,9 @@ int main(int argc, char *argv[]) {
                 print_with_glitch(processed, proc_opts.use_color, glitch_interval_ms, glitch_opts);
             } else {
                 // nothign just print clean img once
-                std::string text = render_to_console(processed.cells, processed.blocks_x, processed.blocks_y, proc_opts.use_color);
+                std::string text;
+                text.reserve(4096);
+                render_to_console(processed.cells, processed.blocks_x, processed.blocks_y, proc_opts.use_color, text);
                 std::cout << text;
             }
         }

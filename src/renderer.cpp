@@ -33,22 +33,8 @@ static void append_int(std::string& out, T val) {
 
 // console renderer
 
-std::string render_to_console(const std::vector<Cell>& cells,
-                            int blocks_x, int blocks_y, bool use_color) {
-    
-    // persistent buffer, grows to max size once
-    static std::string output;
-    static int last_blocks_x = -1;
-    static int last_blocks_y = -1;
-
-    // reserve enough space if dim changes
-    if (blocks_x != last_blocks_x || blocks_y != last_blocks_y) {
-        last_blocks_x = blocks_x;
-        last_blocks_y = blocks_y;
-        output.reserve(blocks_x * blocks_y * 60); //rough estimate around ~50 for ansi
-    }
-
-    output.clear();
+void render_to_console(const std::vector<Cell>& cells, int blocks_x, int blocks_y,
+                        bool use_color, std::string& out) {
 
     if (use_color) {
         for (int y = 0; y < blocks_y; ++y) {
@@ -56,45 +42,44 @@ std::string render_to_console(const std::vector<Cell>& cells,
                 const Cell& cell = cells[y * blocks_x + x];
 
                 // fg
-                output.append("\033[38;2;");
-                append_int(output, cell.r);
-                output.push_back(';');
-                append_int(output, cell.g);
-                output.push_back(';');
-                append_int(output, cell.b);
-                output.push_back('m');
+                out.append("\033[38;2;");
+                append_int(out, cell.r);
+                out.push_back(';');
+                append_int(out, cell.g);
+                out.push_back(';');
+                append_int(out, cell.b);
+                out.push_back('m');
 
                 // bg
-                output.append("\033[48;2;");
-                append_int(output, cell.br);
-                output.push_back(';');
-                append_int(output, cell.bg);
-                output.push_back(';');
-                append_int(output, cell.bb);
-                output.push_back('m');
+                out.append("\033[48;2;");
+                append_int(out, cell.br);
+                out.push_back(';');
+                append_int(out, cell.bg);
+                out.push_back(';');
+                append_int(out, cell.bb);
+                out.push_back('m');
 
-                output.push_back(cell.ch);
-                output.append("\033[0m");
+                out.push_back(cell.ch);
+                out.append("\033[0m");
             }
-            output.push_back('\n');
+            out.push_back('\n');
         }
     } else {
         // monochrome
         for (int y = 0; y < blocks_y; ++y) {
             for (int x = 0; x < blocks_x; ++x) {
-                output.push_back(cells[y * blocks_x + x].ch);
+                out.push_back(cells[y * blocks_x + x].ch);
             }
-            output.push_back('\n');
+            out.push_back('\n');
         }
     }
-
-    return output;
 }
 
 // png renderer
 
 void render_to_png(const ProcessedImage& img, const std::string& filename,
                    bool use_color, int cell_w, int cell_h) {
+
     int image_w = img.blocks_x * cell_w;
     int image_h = img.blocks_y * cell_h;
     std::vector<unsigned char> pixels(image_w * image_h * 3, 0);
@@ -216,16 +201,18 @@ void print_with_glitch(const ProcessedImage& base_img, bool use_color, int inter
     std::vector<Cell> working_cells(base_img.cells.size());
     const std::vector<Cell>& base_cells = base_img.cells;
 
+    std::string full_output;
+    full_output.reserve(8192);
+
     while (!g_exit_requested) {
         // fast raw copy
         std::memcpy(working_cells.data(), base_cells.data(), base_cells.size() * sizeof(Cell));
 
         apply_glitch_pipeline(working_cells, base_img.blocks_x, base_img.blocks_y, glitch_opts);
 
-        std::string full_output;
-        full_output.reserve(4096);
+        full_output.clear();
         full_output.append("\033[2J\033[H");
-        full_output.append(render_to_console(working_cells, base_img.blocks_x, base_img.blocks_y, use_color));
+        render_to_console(working_cells, base_img.blocks_x, base_img.blocks_y, use_color, full_output);
 
         write_console_output(full_output);
 
@@ -247,6 +234,9 @@ void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
     if (frames.empty()) return;
     std::vector<Cell> working_cells(frames[0].cells.size());
 
+    std::string full_output;
+    full_output.reserve(8192);
+
     size_t frame_count = frames.size();
     while (!g_exit_requested) {
         for (size_t i = 0; i < frame_count; ++i) {
@@ -258,10 +248,9 @@ void animate_gif_in_console(const std::vector<ProcessedImage>& frames,
 
             apply_glitch_pipeline(working_cells, frame.blocks_x, frame.blocks_y, glitch_opts);
 
-            std::string full_output;
-            full_output.reserve(8192);
+            full_output.clear();
             full_output.append("\033[2J\033[H");
-            full_output.append(render_to_console(working_cells, frame.blocks_x, frame.blocks_y, use_color));
+            render_to_console(working_cells, frame.blocks_x, frame.blocks_y, use_color, full_output);
 
             write_console_output(full_output);
 

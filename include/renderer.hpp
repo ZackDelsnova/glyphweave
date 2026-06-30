@@ -6,17 +6,18 @@
 // renderer for various outputs
 
 // string with ansi code to print to console
-std::string render_to_console(const std::vector<Cell>& cells,
-                                int blocks_x, int blocks_y, bool use_color);
+void render_to_console(const std::vector<Cell>& cells, int blocks_x, int blocks_y,
+                            bool use_color, std::string& out);
+
 // save as png
 void render_to_png(const ProcessedImage& img, const std::string& filename,
-                   bool use_color, int cell_w = 8, int cell_h = 12);
+                   bool use_color, int cell_w = 4, int cell_h = 6);
 
 // save as animated gif
 void render_to_gif(const std::vector<ProcessedImage>& frames,
                    const std::vector<int>& delays,
                    const std::string& filename,
-                   bool use_color, int cell_w = 8, int cell_h = 12);
+                   bool use_color, int cell_w = 4, int cell_h = 6);
 
 // save as txt (ascii art)
 void save_to_file(const std::string& content, const std::string& filename);

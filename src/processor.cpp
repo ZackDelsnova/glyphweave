@@ -4,8 +4,6 @@
 #include <vector>
 #include <string>
 
-#include <algorithm>  // for std::clamp, std::min_element, std::max_element
-
 // bayer matrix 4x4 - values 0 to 15, scazled to 0 to 255 later
 static const int BAYER_4x4[4][4] = {
     { 0, 8, 2, 10 },
@@ -13,6 +11,14 @@ static const int BAYER_4x4[4][4] = {
     { 3, 11,  1,  9 },
     { 15,  7, 13,  5 }
 };
+
+// centered bayer matrix 4x4, already scaled and centered
+static const int BAYER_CENTERED[4][4] = {
+    { -120,   -88,   -88,   -56 },
+    {  -56,  -120,   -24,   -88 },
+    {  -88,   -56,  -120,   -88 },
+    {  -24,   -88,   -56,  -120 }
+}; // actual values - bayer_4x4 * 16 - 120
 
 // helper funcs
 static void get_avg(const Image& src, unsigned char* out, int x1, int x2, int y1, int y2) {
@@ -127,10 +133,8 @@ static std::vector<Cell> process_blocks(
                 if (count == 0) continue;
 
                 float avg_gray = sum_gray / count;
-                // bayer threshold - use blocks top left pos
-                int thresh = BAYER_4x4[x0 % 4][y0 % 4] * 16; // scale to 0 to 240
-                // add threshold to avg gray to get dithered val
-                float dithered = avg_gray + (thresh - 120); // center is around 0
+                // use pre centered bayer threshold
+                float dithered = avg_gray + BAYER_CENTERED[x0 % 4][y0 % 4];
                 dithered = std::clamp(dithered, 0.0f, 255.0f);
 
                 int char_idx = static_cast<int>((dithered / 255.0f) * (NUM_BLOCKS - 1) + 0.5f);
@@ -249,8 +253,7 @@ static std::vector<Cell> process_blocks(
     return cells;
 }
 
-// main funcs
-
+// main processing pipline
 ProcessedImage process_image(const unsigned char* pixels, int w, int h, int channels,
                                 const ProcessingOptions& opts) {
     // main parameters
@@ -276,9 +279,4 @@ ProcessedImage process_image(const unsigned char* pixels, int w, int h, int chan
     result.target_width = opts.target_width;
     result.target_height = TARGET_HEIGHT;
     return result;
-}
-
-ProcessedImage process_frame(const unsigned char* frame_pixels, int width, int height,
-                             int channels, const ProcessingOptions& opts) {
-    return process_image(frame_pixels, width, height, channels, opts);
 }
