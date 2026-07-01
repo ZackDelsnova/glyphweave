@@ -3,11 +3,15 @@
 **Glyphweave** is a command‑line tool that transforms images (static or animated GIFs) into beautiful ASCII art with true‑colour support and a rich set of real‑time glitch effects.  
 It combines high‑quality Floyd‑Steinberg or Bayer dithering with a fully configurable glitch pipeline – perfect for terminal art, creative coding, or just having fun.
 
+**Glyphweave** is just a fun and cool name
+
 ---
 
 ## Note
 
 Im too lazy to make a readme, so this is made by llm, dont ask me if something is off abt this
+
+theres also a secret option for the glitch find it and try it out
 
 ---
 
