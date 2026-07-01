@@ -53,6 +53,7 @@ namespace {
         for (auto& cell : cells) {
             if (dist(gen) < rate) {
                 cell.ch = ' '; // space
+                cell.r = cell.g = cell.b = 0;
                 cell.br = cell.bg = cell.bb = 0;
             }
         }

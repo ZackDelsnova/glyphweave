@@ -3,8 +3,3 @@
 build-debug/
 build-release/
 
-*.jpg
-*.png
-*.gif
-*.txt
-!CMakeLists.txt
